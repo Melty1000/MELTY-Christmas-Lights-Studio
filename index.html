@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Melty's Lights Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.181.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.181.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        window.THREE = THREE;
+    </script>
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body,
+        button,
+        input,
+        select,
+        textarea {
+            pointer-events: auto !important;
+        }
+    </style>
+</head>
+
+<body style="pointer-events: auto !important;">
+    <div id="canvas-container"></div>
+
+    <div id="custom-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 id="modal-title">Dialog</h3>
+            <p id="modal-message"></p>
+            <div id="modal-input-container" style="display:none;">
+                <input type="text" id="modal-input" placeholder="" maxlength="24">
+            </div>
+            <div id="modal-textarea-container" style="display:none;">
+                <textarea id="modal-textarea" rows="8" placeholder=""></textarea>
+            </div>
+            <div class="modal-buttons">
+                <button id="modal-cancel-btn" class="secondary-btn">Cancel</button>
+                <button id="modal-ok-btn" class="primary-btn">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CLEANED UI ELEMENTS -->
+    <div id="settings-panel">
+        <div class="panel-header">
+            <div class="header-title">
+                <h3><span class="emoji"><img src="favicon.png" alt="😜"
+                            style="width: 32px; height: 32px; vertical-align: middle;"></span><span class="text">MELTYS
+                        LIGHTS STUDIO</span></h3>
+            </div>
+            <div class="header-actions">
+                <button id="toggle-ui-btn" class="icon-btn" title="Hide UI">👁️ Hide UI</button>
+                <button id="import-btn" class="icon-btn" title="Import">📥 Import</button>
+                <button id="export-btn" class="icon-btn" title="Export">📤 Export</button>
+                <button id="save-preset-btn" class="icon-btn" title="Save">💾 Save</button>
+            </div>
+        </div>
+
+        <div class="preset-bar">
+            <button class="preset-btn" data-preset="classic">Classic</button>
+            <button class="preset-btn" data-preset="winter">Winter</button>
+            <button class="preset-btn" data-preset="neon">Neon</button>
+            <button class="preset-btn" data-preset="vintage">Vintage</button>
+            <button class="preset-btn" data-preset="party">Party</button>
+            <button class="preset-btn special" data-preset="random">🎲 Surprise</button>
+            <!-- Custom Preset Divider (Hidden unless custom presets exist) -->
+            <div class="preset-divider custom-divider hidden"></div>
+        </div>
+
+        <div class="tab-content-wrapper">
+
+            <div class="visual-grid">
+                <div class="control-card theme-card">
+                    <div class="card-header">THEME & COLORS</div>
+                    <div class="card-content">
+                        <div class="setting-group">
+                            <label class="setting-label">Bulb Theme</label>
+                            <select id="theme-select"></select>
+                        </div>
+                        <div class="setting-group">
+                            <label class="setting-label">Wire Theme</label>
+                            <select id="wire-select"></select>
+                        </div>
+                        <div class="toggles-column">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="cycling-check">
+                                <span class="toggle-switch"></span>
+                                <span class="toggle-text">Color Cycling</span>
+                            </label>
+                            <label class="toggle-label">
+                                <input type="checkbox" id="avoid-adjacent-check">
+                                <span class="toggle-switch"></span>
+                                <span class="toggle-text">Avoid Clashing</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-card tabbed-card">
+                    <div class="card-header-tabs">
+                        <button class="card-tab-btn active" data-card-tab="bulb-config">BULB CONFIGURATION</button>
+                        <button class="card-tab-btn" data-card-tab="wire-config">WIRE CONFIGURATION</button>
+                        <button class="card-tab-btn" data-card-tab="extras-config">EXTRAS</button>
+                        <button class="card-tab-btn" data-card-tab="sys-config">SETTINGS</button>
+                    </div>
+
+                    <div class="card-tab-content active" id="bulb-config">
+                        <div class="three-column-grid-even">
+
+                            <div class="column">
+                                <h5 class="sub-header">MATERIAL</h5>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Bulb Size</span>
+                                        <span class="label-value inline-value">0.08</span>
+                                    </label>
+                                    <input type="range" id="bulb-size-slider" min="0.05" max="0.75" step="0.01">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Glass Opacity</span>
+                                        <span class="label-value inline-value">0.25</span>
+                                    </label>
+                                    <input type="range" id="glass-opacity-slider" min="0.0" max="1.0" step="0.05">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Roughness</span>
+                                        <span class="label-value inline-value">1.0</span>
+                                    </label>
+                                    <input type="range" id="glass-roughness-slider" min="0.0" max="1.0" step="0.05">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Refraction</span>
+                                        <span class="label-value inline-value">2.5</span>
+                                    </label>
+                                    <input type="range" id="ior-slider" min="1.0" max="2.5" step="0.1">
+                                </div>
+                            </div>
+
+                            <div class="column">
+                                <h5 class="sub-header">LIGHTING</h5>
+                                <div class="setting-group">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="postfx-enabled-check">
+                                        <span class="toggle-switch"></span>
+                                        <span class="toggle-text">Enable Post-FX (Bloom)</span>
+                                    </label>
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Bloom Strength</span>
+                                        <span class="label-value inline-value">1.2</span>
+                                    </label>
+                                    <input type="range" id="bloom-strength-slider" min="0.0" max="4.0" step="0.05">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Bloom Radius</span>
+                                        <span class="label-value inline-value">0.6</span>
+                                    </label>
+                                    <input type="range" id="bloom-radius-slider" min="0.0" max="2.0" step="0.05">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Bloom Threshold</span>
+                                        <span class="label-value inline-value">0.4</span>
+                                    </label>
+                                    <input type="range" id="bloom-threshold-slider" min="0.0" max="1.0" step="0.05">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Bloom Intensity</span>
+                                        <span class="label-value inline-value">1.0</span>
+                                    </label>
+                                    <input type="range" id="bloom-intensity-slider" min="0.0" max="4.0" step="0.05">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Emission</span>
+                                        <span class="label-value inline-value">0.0</span>
+                                    </label>
+                                    <input type="range" id="emissive-slider" min="0.0" max="6.0" step="0.1">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Ambient Fill</span>
+                                        <span class="label-value inline-value">0.8</span>
+                                    </label>
+                                    <input type="range" id="ambient-slider" min="0.0" max="1.0" step="0.05">
+                                </div>
+                            </div>
+
+                            <div class="column">
+                                <h5 class="sub-header" style="visibility: hidden;">SPACER</h5>
+
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Twinkle Speed</span>
+                                        <span class="label-value inline-value">0.03</span>
+                                    </label>
+                                    <input type="range" id="twinkle-speed-slider" min="0.0" max="0.2" step="0.01">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Min Bright</span>
+                                        <span class="label-value inline-value">0.0</span>
+                                    </label>
+                                    <input type="range" id="min-brightness-slider" min="0.0" max="0.5" step="0.05">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Randomness</span>
+                                        <span class="label-value inline-value">2.0</span>
+                                    </label>
+                                    <input type="range" id="randomness-slider" min="0.0" max="2.0" step="0.1">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-tab-content" id="wire-config">
+                        <div class="three-column-grid-even">
+                            <div class="column">
+                                <h5 class="sub-header">GEOMETRY</h5>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Pin Points</span>
+                                        <span class="label-value inline-value">7</span>
+                                    </label>
+                                    <input type="range" id="pins-slider" min="2" max="20" step="1">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Wire Sag</span>
+                                        <span class="label-value inline-value">0.5</span>
+                                    </label>
+                                    <input type="range" id="sag-slider" min="0.0" max="10.0" step="0.1">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Tension</span>
+                                        <span class="label-value inline-value">0.0</span>
+                                    </label>
+                                    <input type="range" id="tension-slider" min="0.0" max="2.0" step="0.01">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Lights/Span</span>
+                                        <span class="label-value inline-value">1</span>
+                                    </label>
+                                    <input type="range" id="lights-slider" min="1" max="100" step="1">
+                                </div>
+                            </div>
+                            <div class="column">
+                                <h5 class="sub-header">APPEARANCE</h5>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Twists</span>
+                                        <span class="label-value inline-value">120</span>
+                                    </label>
+                                    <input type="range" id="twists-slider" min="0" max="250" step="5">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Thickness</span>
+                                        <span class="label-value inline-value">0.017</span>
+                                    </label>
+                                    <input type="range" id="thickness-slider" min="0.001" max="0.125" step="0.001">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Separation</span>
+                                        <span class="label-value inline-value">0.02</span>
+                                    </label>
+                                    <input type="range" id="wire-separation-slider" min="0.001" max="0.6" step="0.001">
+                                </div>
+                            </div>
+                            <div class="column">
+                                <h5 class="sub-header">PHYSICS & MOTION</h5>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Time Speed</span>
+                                        <span class="label-value inline-value">0.6</span>
+                                    </label>
+                                    <input type="range" id="speed-slider" min="0.0" max="2.0" step="0.05">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Sway X (Horizontal)</span>
+                                        <span class="label-value inline-value">0.02</span>
+                                    </label>
+                                    <input type="range" id="sway-x-slider" min="0.0" max="0.3" step="0.01">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Sway Z (Depth)</span>
+                                        <span class="label-value inline-value">0.1</span>
+                                    </label>
+                                    <input type="range" id="sway-z-slider" min="0.0" max="0.3" step="0.01">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-tab-content" id="extras-config">
+                        <div class="two-column-grid">
+                            <div class="column">
+                                <h5 class="sub-header">SNOW SYSTEM</h5>
+                                <div class="setting-group">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="snow-check">
+                                        <span class="toggle-switch"></span>
+                                        <span class="toggle-text">Enable Snow</span>
+                                    </label>
+                                </div>
+                                <div id="snow-settings">
+                                    <div class="setting-group">
+                                        <label class="setting-label">
+                                            <span class="label-text">Count</span>
+                                            <span class="label-value inline-value">100</span>
+                                        </label>
+                                        <input type="range" id="snow-count-slider" min="100" max="3000" step="100">
+                                    </div>
+                                    <div class="setting-group">
+                                        <label class="setting-label">
+                                            <span class="label-text">Speed</span>
+                                            <span class="label-value inline-value">0.005</span>
+                                        </label>
+                                        <input type="range" id="snow-speed-slider" min="0.005" max="0.05" step="0.005">
+                                    </div>
+                                    <div class="setting-group">
+                                        <label class="setting-label">
+                                            <span class="label-text">Size</span>
+                                            <span class="label-value inline-value">0.01</span>
+                                        </label>
+                                        <input type="range" id="snow-size-slider" min="0.01" max="10" step="0.01">
+                                    </div>
+                                    <div class="setting-group">
+                                        <label class="setting-label">
+                                            <span class="label-text">Drift</span>
+                                            <span class="label-value inline-value">0.0</span>
+                                        </label>
+                                        <input type="range" id="drift-slider" min="0.0" max="0.1" step="0.01">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="column">
+                                <h5 class="sub-header">STAR FIELD</h5>
+                                <div class="setting-group">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="stars-check">
+                                        <span class="toggle-switch"></span>
+                                        <span class="toggle-text">Enable Star Field</span>
+                                    </label>
+                                </div>
+                                <div id="star-settings">
+                                    <div class="setting-group">
+                                        <label class="setting-label">
+                                            <span class="label-text">Count</span>
+                                            <span class="label-value inline-value">100</span>
+                                        </label>
+                                        <input type="range" id="stars-count-slider" min="100" max="2000" step="100">
+                                    </div>
+                                    <div class="setting-group">
+                                        <label class="setting-label">
+                                            <span class="label-text">Size</span>
+                                            <span class="label-value inline-value">0.1</span>
+                                        </label>
+                                        <input type="range" id="stars-size-slider" min="0.1" max="3.0" step="0.1">
+                                    </div>
+                                    <div class="setting-group">
+                                        <label class="setting-label">
+                                            <span class="label-text">Opacity</span>
+                                            <span class="label-value inline-value">0.1</span>
+                                        </label>
+                                        <input type="range" id="stars-opacity-slider" min="0.1" max="1.0" step="0.1">
+                                    </div>
+                                    <div class="setting-group">
+                                        <label class="setting-label">
+                                            <span class="label-text">Twinkle Speed</span>
+                                            <span class="label-value inline-value">0.0</span>
+                                        </label>
+                                        <input type="range" id="stars-twinkle-slider" min="0.0" max="2.0" step="0.1">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-tab-content" id="sys-config">
+                        <div class="two-column-grid">
+                            <div class="column">
+                                <h5 class="sub-header">CAMERA POSITION</h5>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Distance (Zoom)</span>
+                                        <span class="label-value inline-value">14</span>
+                                    </label>
+                                    <input type="range" id="zoom-slider" min="1" max="50" step="1">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Height (Y)</span>
+                                        <span class="label-value inline-value">-0.5</span>
+                                    </label>
+                                    <input type="range" id="height-slider" min="-15" max="22" step="0.5">
+                                </div>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Pan (X)</span>
+                                        <span class="label-value inline-value">0.0</span>
+                                    </label>
+                                    <input type="range" id="camera-x-slider" min="-20" max="20" step="0.5" value="0.0">
+                                </div>
+                            </div>
+
+                            <div class="column">
+                                <h5 class="sub-header">SYSTEM & RENDER</h5>
+                                <div class="setting-group">
+                                    <label class="setting-label">
+                                        <span class="label-text">Quality</span>
+                                        <span class="label-value inline-value" id="quality-label-text">High</span>
+                                    </label>
+                                    <input type="range" id="quality-slider" min="0" max="3" step="1" value="2">
+                                </div>
+                                <div class="toggles-column">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="shadows-check">
+                                        <span class="toggle-switch"></span>
+                                        <span class="toggle-text">Cast Shadows</span>
+                                    </label>
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="background-check">
+                                        <span class="toggle-switch"></span>
+                                        <span class="toggle-text">Solid BG</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="button-container">
+            <button id="reset-btn" class="secondary-btn">RESET DEFAULTS</button>
+            <button id="apply-btn" class="primary-btn">APPLY CHANGES</button>
+        </div>
+    </div>
+
+    <button id="show-ui-btn" class="floating-btn hidden">👁️ Show UI</button>
+    <div id="toast-container"></div>
+
+    <!-- Modal Overlay -->
+    <div id="custom-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 id="modal-title" class="modal-title"></h3>
+            <p id="modal-message" class="modal-message"></p>
+            <div id="modal-input-container" class="modal-input-container">
+                <input type="text" id="modal-input" class="modal-input" maxlength="24" placeholder="" />
+            </div>
+            <div id="modal-textarea-container" class="modal-textarea-container">
+                <textarea id="modal-textarea" class="modal-textarea" placeholder="" rows="8"></textarea>
+            </div>
+            <div class="modal-buttons">
+                <button id="modal-cancel-btn" class="modal-btn modal-cancel">Cancel</button>
+                <button id="modal-ok-btn" class="modal-btn modal-ok">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+
+</html>
