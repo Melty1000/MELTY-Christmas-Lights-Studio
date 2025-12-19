@@ -1,11 +1,14 @@
 # 🎄 Melty's Christmas Lights Studio
 
-**The most gorgeous, customizable, OBS-ready Christmas lights overlay this side of the North Pole!**
+**The most gorgeous, extremely customizable, OBS-ready Christmas lights overlay this side of the North Pole!**
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
-![Three.js](https://img.shields.io/badge/Three.js-r182-orange)
+![Version](https://img.shields.io/badge/version-2025-green)
+![Three.js](https://img.shields.io/badge/Three.js-r182-red)
 
 ---
+### [Click Me To Test!](https://melty1000.github.io/MELTY-Christmas-Lights-Studio/)  
+> [!NOTE]
+> <sup> *designed to work best in obs or chrome* <sup>
 
 ## 📺 OBS Browser Source Setup
 
@@ -42,16 +45,14 @@ Once the browser source is added, you can customize your lights while off stream
 4. Every change you make happens live on your stream 🎉
 5. When you're done, just close the Interact window
     - note: if you run into any issues, open the broswer source properties, scroll to the bottom, and click "Refresh Cache"
-
-### Pro Tip: Nested Scene Setup
-
-For the cleanest workflow, use a **nested scene**:
-
-1. Create a brand new scene and name it "Christmas Lights"
-2. Add the browser source to THIS scene (not your main streaming scene)
-3. Go to your main streaming scene
-4. Click **+** → **Scene** → select "Christmas Lights"
-5. Now you can easily toggle the entire overlay on/off!
+> [!TIP] 
+> ### Pro Tip: Nested Scene Setup
+> For the cleanest workflow, use a **nested scene**:
+> 1. Create a brand new scene and name it "Christmas Lights"
+> 2. Add the browser source to THIS scene (not your main streaming scene)
+> 3. Go to your main streaming scene
+> 4. Click **+** → **Scene** → select "Christmas Lights"
+> 5. Now you can easily toggle the entire overlay on/off!
 
 ---
 
