@@ -7,6 +7,8 @@
 import {
     AdditiveBlending,
     Color,
+    CustomBlending,
+    OneFactor,
     HalfFloatType,
     MeshBasicMaterial,
     ShaderMaterial,
@@ -105,15 +107,34 @@ class UnrealBloomPass extends Pass {
         this.bloomTintColors = [new Vector3(1, 1, 1), new Vector3(1, 1, 1), new Vector3(1, 1, 1), new Vector3(1, 1, 1), new Vector3(1, 1, 1)];
         this.compositeMaterial.uniforms['bloomTintColors'].value = this.bloomTintColors;
 
-        // blend material - PATCHED: Added premultipliedAlpha: true (PR #32521)
+        // blend material - PR #32517 FIX: CustomBlending for transparent background support
         this.copyUniforms = UniformsUtils.clone(CopyShader.uniforms);
+
+        // Custom fragment shader that outputs alpha = max(r,g,b) * 3.0
+        // This makes bloom visible in transparent areas
+        const blendFragmentShader = `
+            uniform float opacity;
+            uniform sampler2D tDiffuse;
+            varying vec2 vUv;
+            void main() {
+                vec4 texel = texture2D( tDiffuse, vUv );
+                // Output alpha proportional to intensity so bloom is visible on transparent BG
+                // 3.0 multiplier for backwards compatibility (previous behavior amplified bloom ~3x)
+                float bloomAlpha = max( max( texel.r, texel.g ), texel.b ) * 3.0;
+                gl_FragColor = vec4( texel.rgb * opacity, bloomAlpha * opacity );
+            }
+        `;
 
         this.blendMaterial = new ShaderMaterial({
             uniforms: this.copyUniforms,
             vertexShader: CopyShader.vertexShader,
-            fragmentShader: CopyShader.fragmentShader,
-            premultipliedAlpha: true,  // <-- THE FIX FROM PR #32521
-            blending: AdditiveBlending,
+            fragmentShader: blendFragmentShader,
+            // CustomBlending with explicit factors per PR #32517
+            blending: CustomBlending,
+            blendSrc: OneFactor,
+            blendDst: OneFactor,
+            blendSrcAlpha: OneFactor,
+            blendDstAlpha: OneFactor,
             depthTest: false,
             depthWrite: false,
             transparent: true

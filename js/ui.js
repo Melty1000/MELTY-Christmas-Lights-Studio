@@ -1,172 +1,55 @@
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║                     SECTION 6: UI & EVENT HANDLERS                        ║
-// ║       CustomDropdown, setupUI, presets, event listeners                   ║
+// ║                            UI & EVENT HANDLERS                            ║
+// ╠═══════════════════════════════════════════════════════════════════════════╣
+// ║  Imports from ui/ folder:                                                 ║
+// ║    - CustomDropdown from ui/dropdown.js                                   ║
+// ║    - PRESETS, KEY_MAP, REVERSE_KEY_MAP from ui/presets.js                 ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
-import { CONFIG, THEMES, WIRE_THEMES, saveConfig, resetConfig, presetPreferences, savePresetPreferences, getCurrentPresetName } from './config.js';
-import { updateSliderFill, showToast, customPrompt, customTextarea, customAlert, customConfirm } from './utils.js';
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SECTION 1: IMPORTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { CONFIG, THEMES, WIRE_THEMES, SOCKET_THEMES, saveConfig, resetConfig, presetPreferences, savePresetPreferences, getCurrentPresetName, setCurrentPresetName, updateCameraBase, REFERENCE_RESOLUTION } from './config.js';
+import { updateSliderFill, showToast, customPrompt, customTextarea, customAlert, customConfirm, initProximityHover, safeSetItem } from './utils.js';
 import { initScene } from './renderer.js';
+import { initTutorial } from './tutorial.js';
+import { setAutoUpdateEnabled, isAutoUpdateEnabled } from './auto-update.js';
 
-// ===================================
-// CUSTOM DROPDOWN CLASS (OBS-COMPATIBLE)
-// ===================================
-export class CustomDropdown {
-    constructor(selectElement, onChange) {
-        this.selectElement = selectElement;
-        this.onChange = onChange;
-        this.isOpen = false;
-        this.selectedValue = selectElement.value;
-        this.options = Array.from(selectElement.options).map(opt => ({
-            value: opt.value,
-            label: opt.textContent
-        }));
+// Import from ui/ folder
+import { CustomDropdown } from './ui/dropdown.js';
+import { PRESETS, KEY_MAP, REVERSE_KEY_MAP } from './ui/presets.js';
+import { logUser, logInfo, logPerf, logWarn, logError, startTimer, endTimer } from './debug.js';
 
-        // Create custom dropdown
-        this.container = document.createElement('div');
-        this.container.className = 'custom-dropdown';
+// Re-export CustomDropdown for backwards compatibility
+export { CustomDropdown };
 
-        this.button = document.createElement('button');
-        this.button.className = 'custom-dropdown-button';
-        this.button.type = 'button';
 
-        this.menu = document.createElement('div');
-        this.menu.className = 'custom-dropdown-menu';
-
-        this.container.appendChild(this.button);
-        this.container.appendChild(this.menu);
-
-        this.attachEvents();
-        this.render();
-
-        // Replace original select
-        selectElement.style.display = 'none';
-        selectElement.parentNode.insertBefore(this.container, selectElement);
-    }
-
-    render() {
-        const selectedOption = this.options.find(opt => opt.value === this.selectedValue);
-        this.button.textContent = selectedOption ? selectedOption.label : 'Select...';
-
-        this.menu.innerHTML = '';
-        this.options.forEach(option => {
-            const item = document.createElement('div');
-            item.className = 'custom-dropdown-item';
-            if (option.value === this.selectedValue) {
-                item.classList.add('selected');
-            }
-            item.textContent = option.label;
-            item.dataset.value = option.value;
-
-            item.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.select(option.value);
-            });
-
-            this.menu.appendChild(item);
-        });
-    }
-
-    attachEvents() {
-        this.button.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.toggle();
-        });
-
-        document.addEventListener('click', (e) => {
-            if (this.isOpen && !this.container.contains(e.target)) {
-                this.close();
-            }
-        });
-
-        this.button.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                this.toggle();
-            } else if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                const currentIndex = this.options.findIndex(opt => opt.value === this.selectedValue);
-                const nextIndex = Math.min(currentIndex + 1, this.options.length - 1);
-                this.select(this.options[nextIndex].value);
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                const currentIndex = this.options.findIndex(opt => opt.value === this.selectedValue);
-                const prevIndex = Math.max(currentIndex - 1, 0);
-                this.select(this.options[prevIndex].value);
-            } else if (e.key === 'Escape') {
-                this.close();
-            }
-        });
-    }
-
-    toggle() {
-        if (this.isOpen) {
-            this.close();
-        } else {
-            this.open();
-        }
-    }
-
-    open() {
-        const buttonRect = this.button.getBoundingClientRect();
-        const viewportHeight = window.innerHeight;
-        const spaceBelow = viewportHeight - buttonRect.bottom - 20;
-
-        const dynamicMaxHeight = Math.max(100, Math.min(spaceBelow, 400));
-        this.menu.style.maxHeight = `${dynamicMaxHeight}px`;
-
-        this.isOpen = true;
-        this.container.classList.add('open');
-    }
-
-    close() {
-        this.isOpen = false;
-        this.container.classList.remove('open');
-    }
-
-    select(value) {
-        this.selectedValue = value;
-        this.selectElement.value = value;
-        this.render();
-
-        if (this.onChange) this.onChange(value);
-
-        const event = new Event('change', { bubbles: true });
-        this.selectElement.dispatchEvent(event);
-
-        this.close();
-    }
-
-    setValue(value) {
-        this.select(value);
-    }
-}
-
-// =========================================
-//  UI BINDING & CONTROLS  
-// =========================================
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SECTION 2: UI BINDING & CONTROLS (setupUI)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 let uiInitialized = false;
-let themeDropdown, wireDropdown, qualityDropdown;
-let currentPresetName = null;
+let themeDropdown, wireDropdown, socketDropdown, animationStyleDropdown;
+// currentPresetName is declared in config.js
 
 export function setupUI() {
     if (uiInitialized) {
-        console.warn('⚠️ setupUI() already called, skipping duplicate initialization');
+        logWarn('UI', 'setupUI() already called, skipping duplicate initialization');
         return;
     }
 
     if (document.body.dataset.uiInitialized === 'true') {
-        console.error('❌ setupUI() called but body already marked as initialized!');
+        logError('UI', 'setupUI() called but body already marked as initialized!');
         return;
     }
 
-    console.log('✅ Initializing UI for the first time');
     uiInitialized = true;
     document.body.dataset.uiInitialized = 'true';
 
     const themeSelect = document.getElementById('theme-select');
     const wireSelect = document.getElementById('wire-select');
-    const qualitySelect = document.getElementById('quality-select');
+    const socketSelect = document.getElementById('socket-select');
 
     // Populate dropdowns
     Object.keys(THEMES).forEach(key => {
@@ -181,23 +64,58 @@ export function setupUI() {
         if (key === CONFIG.WIRE_THEME) option.selected = true;
     });
 
+    Object.keys(SOCKET_THEMES).forEach(key => {
+        const option = new Option(key.replace(/_/g, ' '), key);
+        socketSelect.add(option);
+        if (key === CONFIG.SOCKET_THEME) option.selected = true;
+    });
+
     // Theme Select
     if (themeSelect) {
         themeDropdown = new CustomDropdown(themeSelect, (value) => {
             CONFIG.ACTIVE_THEME = value;
-            console.log('Theme changed to:', value);
+            applyChanges();
         });
-        console.log('✅ Theme custom dropdown initialized');
     }
 
     // Wire Select
     if (wireSelect) {
         wireDropdown = new CustomDropdown(wireSelect, (value) => {
             CONFIG.WIRE_THEME = value;
-            console.log('Wire theme changed to:', value);
+            applyChanges();
         });
-        console.log('✅ Wire theme custom dropdown initialized');
     }
+
+    // Socket Select
+    if (socketSelect) {
+        socketDropdown = new CustomDropdown(socketSelect, (value) => {
+            CONFIG.SOCKET_THEME = value;
+            applyChanges();
+        });
+    }
+
+    // Animation Style Select
+    const animationStyleSelect = document.getElementById('animation-style-select');
+
+    if (animationStyleSelect) {
+        animationStyleDropdown = new CustomDropdown(animationStyleSelect, (value) => {
+            CONFIG.ANIMATION_STYLE = value;
+        });
+    }
+
+    // Expose dropdowns for tutorial to animate
+    window.dropdowns = {
+        'theme-select': themeDropdown,
+        'wire-select': wireDropdown,
+        'socket-select': socketDropdown,
+        'animation-style-select': animationStyleDropdown
+    };
+
+    // Sync all dropdowns with CONFIG values (silent to avoid re-setting CONFIG)
+    if (themeDropdown) themeDropdown.setValueSilent(CONFIG.ACTIVE_THEME);
+    if (wireDropdown) wireDropdown.setValueSilent(CONFIG.WIRE_THEME);
+    if (socketDropdown) socketDropdown.setValueSilent(CONFIG.SOCKET_THEME);
+    if (animationStyleDropdown) animationStyleDropdown.setValueSilent(CONFIG.ANIMATION_STYLE);
 
     // Quality Slider
     const qualitySlider = document.getElementById('quality-slider');
@@ -222,26 +140,136 @@ export function setupUI() {
             }
 
             CONFIG.QUALITY = qualityStr;
-            console.log('Quality changed to:', qualityStr);
 
             if (qualityLabel) {
                 qualityLabel.textContent = qualityDisplayMap[val];
             }
             updateSliderFill(e.target);
         });
-        console.log('✅ Quality slider initialized');
     }
+
+    // Function to toggle twinkle-related controls when speed is 0
+    function updateTwinkleMode() {
+        const isTwinkleOff = CONFIG.TWINKLE_SPEED < 0.001;
+        const randomnessGroup = document.getElementById('randomness-group');
+        const randomnessSlider = document.getElementById('randomness-slider');
+        const minBrightnessSlider = document.getElementById('min-brightness-slider');
+        const minBrightnessGroup = minBrightnessSlider ? minBrightnessSlider.closest('.setting-group') : null;
+
+        if (isTwinkleOff) {
+            // Disable randomness when twinkle is off
+            if (randomnessGroup) randomnessGroup.classList.add('disabled');
+            if (randomnessSlider) randomnessSlider.disabled = true;
+            // Grey out min brightness (brightness is defined by max when twinkle is off)
+            if (minBrightnessGroup) minBrightnessGroup.classList.add('disabled');
+            if (minBrightnessSlider) minBrightnessSlider.disabled = true;
+        } else {
+            // Enable randomness when twinkle is on
+            if (randomnessGroup) randomnessGroup.classList.remove('disabled');
+            if (randomnessSlider) randomnessSlider.disabled = false;
+            // Enable min brightness
+            if (minBrightnessGroup) minBrightnessGroup.classList.remove('disabled');
+            if (minBrightnessSlider) minBrightnessSlider.disabled = false;
+        }
+    }
+
+    // Make function globally accessible
+    window.updateTwinkleMode = updateTwinkleMode;
+
+    // Initial mode check
+    setTimeout(updateTwinkleMode, 100);
+
+    // Listen to twinkle speed slider to toggle twinkle mode
+    const twinkleSpeedSlider = document.getElementById('twinkle-speed-slider');
+    if (twinkleSpeedSlider) {
+        twinkleSpeedSlider.addEventListener('input', () => {
+            CONFIG.TWINKLE_SPEED = parseFloat(twinkleSpeedSlider.value);
+            updateTwinkleMode();
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  DYNAMIC MAX LIGHTS CALCULATION
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Calculate dynamic max lights based on bulb size and pin count
+    // Uses bilinear interpolation between four corner values:
+    //   max bulb + max pins = 1, max bulb + min pins = 36
+    //   min bulb + max pins = 24, min bulb + min pins = 100
+    function calculateDynamicLightsMax(bulbSize, numPins) {
+        const BULB_MIN = 0.05, BULB_MAX = 0.75;
+        const PINS_MIN = 2, PINS_MAX = 12;
+
+        // Corner values [bulb][pins]: [max][max]=1, [max][min]=36, [min][max]=24, [min][min]=100
+        const MAX_BULB_MAX_PINS = 1;
+        const MAX_BULB_MIN_PINS = 36;
+        const MIN_BULB_MAX_PINS = 24;
+        const MIN_BULB_MIN_PINS = 100;
+
+        // Normalize inputs to 0-1 range
+        const bulbT = Math.max(0, Math.min(1, (bulbSize - BULB_MIN) / (BULB_MAX - BULB_MIN)));
+        const pinsT = Math.max(0, Math.min(1, (numPins - PINS_MIN) / (PINS_MAX - PINS_MIN)));
+
+        // Bilinear interpolation
+        const minPinsVal = MIN_BULB_MIN_PINS + bulbT * (MAX_BULB_MIN_PINS - MIN_BULB_MIN_PINS);
+        const maxPinsVal = MIN_BULB_MAX_PINS + bulbT * (MAX_BULB_MAX_PINS - MIN_BULB_MAX_PINS);
+        const result = minPinsVal + pinsT * (maxPinsVal - minPinsVal);
+
+        return Math.max(1, Math.round(result));
+    }
+
+    // Update lights slider max based on bulb size and pins (clamp lights DOWN if exceeds)
+    function updateLightsSliderMax() {
+        const lightsSlider = document.getElementById('lights-slider');
+        const bulbSlider = document.getElementById('bulb-size-slider');
+        const pinsSlider = document.getElementById('pins-slider');
+        if (!lightsSlider || !bulbSlider || !pinsSlider) return;
+
+        // Read current values from DOM
+        const currentBulbSize = parseFloat(bulbSlider.value);
+        const currentNumPins = parseInt(pinsSlider.value, 10);
+        const currentLights = parseInt(lightsSlider.value, 10);
+
+        // Calculate dynamic max based on bulb size and pins
+        const newMax = calculateDynamicLightsMax(currentBulbSize, currentNumPins);
+
+        // Set slider max
+        lightsSlider.max = newMax;
+
+        // CLAMP lights DOWN if exceeds new max (do NOT adjust bulb size)
+        if (currentLights > newMax) {
+            lightsSlider.value = newMax;
+            CONFIG.LIGHTS_PER_SEGMENT = newMax;
+        }
+
+        // Update the slider fill visual
+        updateSliderFill(lightsSlider);
+
+        // Update inline value display
+        const inlineValue = lightsSlider.closest('.setting-group')?.querySelector('.slider-value');
+        if (inlineValue) {
+            inlineValue.textContent = lightsSlider.value;
+        }
+    }
+
+    // Expose for use in slider handlers
+    window.updateLightsSliderMax = updateLightsSliderMax;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SECTION 3.2: SLIDER MAPPINGS & CONFIG SYNC
+    // ─────────────────────────────────────────────────────────────────────────
 
     // All UI mappings
     const mappings = [
         { id: 'theme-select', key: 'ACTIVE_THEME' },
         { id: 'wire-select', key: 'WIRE_THEME' },
-        { id: 'cycling-check', key: 'COLOR_CYCLING_ENABLED', type: 'check' },
+        { id: 'socket-select', key: 'SOCKET_THEME' },
+        { id: 'animation-style-select', key: 'ANIMATION_STYLE' },
         { id: 'stars-check', key: 'STARS_ENABLED', type: 'check' },
         { id: 'snow-check', key: 'SNOW_ENABLED', type: 'check' },
         { id: 'background-check', key: 'BACKGROUND_ENABLED', type: 'check' },
-        { id: 'avoid-adjacent-check', key: 'AVOID_ADJACENT_COLORS', type: 'check' },
-        { id: 'shadows-check', key: 'SHADOWS_ENABLED', type: 'check' },
+        { id: 'point-lights-check', key: 'POINT_LIGHTS_ENABLED', type: 'check' },
+        { id: 'antialias-check', key: 'ANTIALIAS_ENABLED', type: 'check' },
         { id: 'pins-slider', key: 'NUM_PINS', type: 'int' },
         { id: 'sag-slider', key: 'SAG_AMPLITUDE' },
         { id: 'bulb-size-slider', key: 'BULB_SCALE' },
@@ -250,12 +278,11 @@ export function setupUI() {
         { id: 'thickness-slider', key: 'WIRE_THICKNESS' },
         { id: 'twinkle-speed-slider', key: 'TWINKLE_SPEED' },
         { id: 'min-brightness-slider', key: 'TWINKLE_MIN_INTENSITY' },
-        { id: 'randomness-slider', key: 'TWINKLE_RANDOMNESS' },
+        { id: 'max-brightness-slider', key: 'TWINKLE_MAX_INTENSITY' },
 
         { id: 'glass-opacity-slider', key: 'GLASS_OPACITY' },
         { id: 'glass-roughness-slider', key: 'GLASS_ROUGHNESS' },
         { id: 'emissive-slider', key: 'EMISSIVE_INTENSITY' },
-        { id: 'ior-slider', key: 'GLASS_IOR' },
         { id: 'speed-slider', key: 'ANIMATION_SPEED' },
         { id: 'sway-x-slider', key: 'SWAY_X' },
         { id: 'sway-z-slider', key: 'SWAY_Z' },
@@ -264,11 +291,10 @@ export function setupUI() {
         { id: 'tension-slider', key: 'TENSION' },
         { id: 'wire-separation-slider', key: 'WIRE_SEPARATION' },
         { id: 'ambient-slider', key: 'AMBIENT_INTENSITY' },
-        { id: 'postfx-enabled-check', key: 'POSTFX_ENABLED', type: 'check' },
         { id: 'bloom-strength-slider', key: 'BLOOM_STRENGTH' },
         { id: 'bloom-radius-slider', key: 'BLOOM_RADIUS' },
         { id: 'bloom-threshold-slider', key: 'BLOOM_THRESHOLD' },
-        { id: 'bloom-intensity-slider', key: 'BLOOM_INTENSITY_COMPOSITE' },
+        { id: 'bloom-intensity-slider', key: 'BLOOM_INTENSITY' },
         { id: 'snow-count-slider', key: 'SNOW_COUNT', type: 'int' },
         { id: 'snow-speed-slider', key: 'SNOW_SPEED' },
         { id: 'snow-size-slider', key: 'SNOW_SIZE' },
@@ -277,7 +303,8 @@ export function setupUI() {
         { id: 'stars-size-slider', key: 'STARS_SIZE' },
         { id: 'stars-opacity-slider', key: 'STARS_OPACITY' },
         { id: 'stars-twinkle-slider', key: 'STARS_TWINKLE_SPEED' },
-        { id: 'camera-x-slider', key: 'CAMERA_X' }
+        { id: 'camera-x-slider', key: 'CAMERA_X' },
+        { id: 'stats-check', key: 'STATS_ENABLED', type: 'check' }
     ];
 
     // Set initial values
@@ -287,7 +314,7 @@ export function setupUI() {
 
         if (m.type === 'check') {
             el.checked = CONFIG[m.key];
-        } else if (m.key === 'ACTIVE_THEME' || m.key === 'WIRE_THEME' || m.key === 'QUALITY') {
+        } else if (m.key === 'ACTIVE_THEME' || m.key === 'WIRE_THEME' || m.key === 'QUALITY' || m.key === 'ANIMATION_STYLE') {
             el.value = CONFIG[m.key];
         } else {
             el.value = CONFIG[m.key];
@@ -301,8 +328,118 @@ export function setupUI() {
         }
     });
 
+    // Auto-update toggle with confirmation dialog when disabling
+    const autoUpdateCheck = document.getElementById('auto-update-check');
+    if (autoUpdateCheck) {
+        // Set initial state from localStorage
+        autoUpdateCheck.checked = isAutoUpdateEnabled();
+
+        autoUpdateCheck.addEventListener('change', async (e) => {
+            if (!e.target.checked) {
+                // User is trying to DISABLE - show confirmation
+                const confirmed = await customConfirm(
+                    'Disable Auto-Updates?',
+                    'If you disable auto-updates, you will need to manually clear your browser cache to receive new features and updates.\n\nAre you sure you want to disable?'
+                );
+
+                if (confirmed) {
+                    setAutoUpdateEnabled(false);
+                } else {
+                    // User cancelled - revert toggle
+                    e.target.checked = true;
+                }
+            } else {
+                // User is enabling - no confirmation needed
+                setAutoUpdateEnabled(true);
+            }
+        });
+    }
+
+    // Dynamic separation max based on thickness
+    // thickness 0.05 → separation max 0.1, thickness 0.005 → separation max 0.02
+    const thicknessSlider = document.getElementById('thickness-slider');
+    const separationSlider = document.getElementById('wire-separation-slider');
+
+    function updateSeparationMax() {
+        if (!thicknessSlider || !separationSlider) return;
+        const thickness = parseFloat(thicknessSlider.value);
+        // Linear interpolation: thickness 0.005 → max 0.02, thickness 0.05 → max 0.1
+        const minThickness = 0.005, maxThickness = 0.05;
+        const minSepMax = 0.02, maxSepMax = 0.1;
+        const t = (thickness - minThickness) / (maxThickness - minThickness);
+        const newMax = minSepMax + t * (maxSepMax - minSepMax);
+        separationSlider.max = newMax.toFixed(3);
+
+        // Clamp current value if it exceeds new max
+        if (parseFloat(separationSlider.value) > newMax) {
+            separationSlider.value = newMax;
+            CONFIG.WIRE_SEPARATION = newMax;
+            const label = separationSlider.parentElement.querySelector('.inline-value');
+            if (label) label.textContent = newMax.toFixed(3);
+        }
+
+        // Update slider fill visual to match new range
+        updateSliderFill(separationSlider);
+    }
+
+    if (thicknessSlider) {
+        thicknessSlider.addEventListener('input', updateSeparationMax);
+        updateSeparationMax(); // Initial call
+    }
+
+    // Dynamic height (Y) range based on zoom (camera distance)
+    // At zoom 50: Y range -15 to +22
+    // At zoom 1: Y range +2 to +5
+    const zoomSlider = document.getElementById('zoom-slider');
+    const heightSlider = document.getElementById('height-slider');
+    let heightSliderInitialized = false;
+
+    function updateHeightSliderRange() {
+        if (!zoomSlider || !heightSlider) return;
+        const zoom = parseFloat(zoomSlider.value);
+
+        // Linear interpolation from zoom 1 → 50
+        const minZoom = 1, maxZoom = 50;
+        const t = Math.max(0, Math.min(1, (zoom - minZoom) / (maxZoom - minZoom)));
+
+        // At zoom 1: min=+2, max=+5  |  At zoom 50: min=-15, max=+22
+        const newMin = 2 + t * (-15 - 2);  // 2 → -15
+        const newMax = 5 + t * (22 - 5);   // 5 → 22
+
+        heightSlider.min = newMin.toFixed(1);
+        heightSlider.max = newMax.toFixed(1);
+
+        // Only clamp/center when user actively changes zoom, not on initial load
+        if (heightSliderInitialized) {
+            const currentVal = parseFloat(heightSlider.value);
+            if (currentVal < newMin || currentVal > newMax) {
+                const centerVal = (newMin + newMax) / 2;
+                heightSlider.value = centerVal;
+                CONFIG.CAMERA_HEIGHT = centerVal;
+            }
+        }
+        heightSliderInitialized = true;
+
+        // Update visual fill
+        updateSliderFill(heightSlider);
+
+        // Update label
+        const label = heightSlider.parentElement?.querySelector('.inline-value');
+        if (label) label.textContent = parseFloat(heightSlider.value).toFixed(1);
+    }
+
+    if (zoomSlider) {
+        zoomSlider.addEventListener('input', updateHeightSliderRange);
+        updateHeightSliderRange(); // Initial call
+    }
+
+    // Flag to prevent cascading rebuilds
+    let isUpdatingFromConfig = false;
+
     // Update UI from CONFIG
     function updateUIFromConfig() {
+        isUpdatingFromConfig = true;
+
         mappings.forEach(m => {
             const el = document.getElementById(m.id);
             if (!el) return;
@@ -324,6 +461,8 @@ export function setupUI() {
 
         if (themeDropdown) themeDropdown.setValue(CONFIG.ACTIVE_THEME);
         if (wireDropdown) wireDropdown.setValue(CONFIG.WIRE_THEME);
+        if (socketDropdown) socketDropdown.setValue(CONFIG.SOCKET_THEME);
+        if (animationStyleDropdown) animationStyleDropdown.setValue(CONFIG.ANIMATION_STYLE);
 
         const snowCheck = document.getElementById('snow-check');
         const starsCheck = document.getElementById('stars-check');
@@ -335,30 +474,83 @@ export function setupUI() {
             starsCheck.checked = CONFIG.STARS_ENABLED || false;
             starsCheck.dispatchEvent(new Event('change', { bubbles: false }));
         }
+
+        isUpdatingFromConfig = false;
     }
 
-    // Apply changes function
+    // Apply changes function with debounce to prevent cascade
+    let applyDebounceTimer = null;
+
+    // Settings that require full scene rebuild (affect geometry or lighting setup)
+    // NOTE: SAG_AMPLITUDE, TENSION, SWAY_X, SWAY_Z removed - they affect animation only, not geometry
+    const REBUILD_REQUIRED_KEYS = new Set([
+        'QUALITY', 'NUM_PINS', 'LIGHTS_PER_SEGMENT', 'WIRE_TWISTS', 'WIRE_THICKNESS',
+        'WIRE_SEPARATION', 'POINT_LIGHTS_ENABLED', 'AVOID_ADJACENT_COLORS', 'BULB_SCALE',
+        'ACTIVE_THEME', 'WIRE_THEME', 'SOCKET_THEME'
+    ]);
+
     function applyChanges() {
-        console.log('Applying changes...');
-        mappings.forEach(m => {
-            const el = document.getElementById(m.id);
-            if (!el) return;
+        // Debounce: cancel pending call, schedule new one
+        if (applyDebounceTimer) {
+            clearTimeout(applyDebounceTimer);
+        }
 
-            if (m.type === 'check') {
-                CONFIG[m.key] = el.checked;
-            } else if (m.type === 'int') {
-                CONFIG[m.key] = parseInt(el.value, 10);
-            } else if (m.key === 'ACTIVE_THEME' || m.key === 'WIRE_THEME' || m.key === 'QUALITY') {
-                CONFIG[m.key] = el.value;
-            } else {
-                CONFIG[m.key] = parseFloat(el.value);
+        applyDebounceTimer = setTimeout(() => {
+            logUser('applyChanges() debounce fired');
+            startTimer('applyChanges');
+
+            // Track what changed
+            let needsRebuild = false;
+            const changedKeys = [];
+
+            mappings.forEach(m => {
+                const el = document.getElementById(m.id);
+                if (!el) return;
+
+                let newValue;
+                if (m.type === 'check') {
+                    newValue = el.checked;
+                } else if (m.type === 'int') {
+                    newValue = parseInt(el.value, 10);
+                } else if (m.key === 'ACTIVE_THEME' || m.key === 'WIRE_THEME' || m.key === 'QUALITY' || m.key === 'ANIMATION_STYLE') {
+                    newValue = el.value;
+                } else {
+                    newValue = parseFloat(el.value);
+                }
+
+                // Check if this setting changed and requires rebuild
+                if (CONFIG[m.key] !== newValue) {
+                    changedKeys.push({ key: m.key, old: CONFIG[m.key], new: newValue });
+                    if (REBUILD_REQUIRED_KEYS.has(m.key)) {
+                        needsRebuild = true;
+                    }
+                }
+
+                CONFIG[m.key] = newValue;
+            });
+
+            if (changedKeys.length > 0) {
+                logUser('Config changed', { keys: changedKeys, needsRebuild });
             }
-        });
 
-        console.log('Saving config and rebuilding scene...');
-        saveConfig();
-        initScene();
+            saveConfig();
+
+            if (needsRebuild) {
+                logUser('Triggering scene rebuild (geometry changed)');
+                initScene(true); // Force new bake cycle since geometry changed
+            } else {
+                logUser('No rebuild needed - live update only');
+                // Post-FX updates are automatic since they read from CONFIG each frame
+            }
+
+            endTimer('applyChanges');
+            applyDebounceTimer = null;
+        }, 200); // 200ms debounce
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SECTION 3.3: TAB SWITCHING & FEATURE TOGGLES
+    // ─────────────────────────────────────────────────────────────────────────
 
     // TAB SWITCHING
     const tabBtns = document.querySelectorAll('.card-tab-btn');
@@ -366,7 +558,7 @@ export function setupUI() {
 
     tabBtns.forEach(btn => {
         if (btn.dataset.listenerAdded === 'true') {
-            console.warn('Tab button already has listener, skipping');
+            logWarn('UI', 'Tab button already has listener, skipping');
             return;
         }
         btn.dataset.listenerAdded = 'true';
@@ -382,7 +574,7 @@ export function setupUI() {
             if (targetContent) {
                 targetContent.classList.add('active');
             } else {
-                console.error(`Tab content not found for ID: ${targetId}`);
+                logError('UI', `Tab content not found for ID: ${targetId}`);
             }
         });
     });
@@ -410,10 +602,13 @@ export function setupUI() {
                     showToast(`Snow will now be enabled when you load the "${currentPreset}" preset.`, 'success', 4000);
                 }
             } else {
-                CONFIG.SNOW_COUNT = 100;
-                CONFIG.SNOW_SPEED = 0.005;
-                CONFIG.SNOW_SIZE = 0.01;
-                CONFIG.SNOW_DRIFT = 0.0;
+                // Stage current values BEFORE disabling (so they can be restored)
+                window.stagedSnowValues = {
+                    count: CONFIG.SNOW_COUNT,
+                    speed: CONFIG.SNOW_SPEED,
+                    size: CONFIG.SNOW_SIZE,
+                    drift: CONFIG.SNOW_DRIFT
+                };
                 snowSettings.classList.add('disabled');
 
                 const currentPreset = getCurrentPresetName();
@@ -453,8 +648,11 @@ export function setupUI() {
                 s.dispatchEvent(new Event('input', { bubbles: true }));
             });
 
-            saveConfig();
-            applyChanges();
+            // Only apply if this was a user action (not triggered by updateUIFromConfig)
+            // Note: applyChanges() already calls saveConfig(), so no need to call it here
+            if (!isUpdatingFromConfig) {
+                applyChanges();
+            }
         });
 
         if (!CONFIG.SNOW_ENABLED) {
@@ -485,10 +683,13 @@ export function setupUI() {
                     showToast(`Stars will now be enabled when you load the "${currentPreset}" preset.`, 'success', 4000);
                 }
             } else {
-                CONFIG.STARS_COUNT = 100;
-                CONFIG.STARS_SIZE = 0.1;
-                CONFIG.STARS_OPACITY = 0.1;
-                CONFIG.STARS_TWINKLE_SPEED = 0.0;
+                // Stage current values BEFORE disabling (so they can be restored)
+                window.stagedStarValues = {
+                    count: CONFIG.STARS_COUNT,
+                    size: CONFIG.STARS_SIZE,
+                    opacity: CONFIG.STARS_OPACITY,
+                    twinkle: CONFIG.STARS_TWINKLE_SPEED
+                };
                 starSettings.classList.add('disabled');
 
                 const currentPreset = getCurrentPresetName();
@@ -528,14 +729,35 @@ export function setupUI() {
                 s.dispatchEvent(new Event('input', { bubbles: true }));
             });
 
-            saveConfig();
-            applyChanges();
+            // Only apply if this was a user action (not triggered by updateUIFromConfig)
+            // Note: applyChanges() already calls saveConfig(), so no need to call it here
+            if (!isUpdatingFromConfig) {
+                applyChanges();
+            }
         });
 
         if (!CONFIG.STARS_ENABLED) {
             starSettings.classList.add('disabled');
         }
     }
+
+    // ANTIALIAS TOGGLE - special handler that requires page reload
+    const antialiasCheck = document.getElementById('antialias-check');
+    if (antialiasCheck) {
+        antialiasCheck.addEventListener('change', () => {
+            CONFIG.ANTIALIAS_ENABLED = antialiasCheck.checked;
+            saveConfig();
+            // Show toast and reload page after short delay
+            showToast('Applying antialiasing change...', 'progress', 1500);
+            setTimeout(() => {
+                location.reload();
+            }, 500);
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SECTION 3.4: UI VISIBILITY & KEYBOARD SHORTCUTS
+    // ─────────────────────────────────────────────────────────────────────────
 
     // HEADER BUTTONS
     const toggleUIBtn = document.getElementById('toggle-ui-btn');
@@ -544,8 +766,19 @@ export function setupUI() {
     const importBtn = document.getElementById('import-btn');
     const exportBtn = document.getElementById('export-btn');
 
-    // Toggle UI visibility
+    // Toggle UI visibility (with debounce to prevent double-toggle from touch+click)
+    let isTogglingUI = false;
     function toggleUI() {
+        if (isTogglingUI) return; // Prevent racing calls
+        isTogglingUI = true;
+        setTimeout(() => { isTogglingUI = false; }, 300); // Reset after 300ms
+
+        // Remove the early-load hide style if it exists (fixes refresh-while-hidden bug)
+        const hideStyle = document.getElementById('panel-hide-style');
+        if (hideStyle) {
+            hideStyle.remove();
+        }
+
         const panel = document.getElementById('settings-panel');
         const isHidden = panel.classList.toggle('hidden');
 
@@ -555,7 +788,7 @@ export function setupUI() {
             if (floatingUIBtn) floatingUIBtn.classList.add('hidden');
         }
 
-        localStorage.setItem('christmas_lights_ui_visible', isHidden ? 'false' : 'true');
+        safeSetItem('christmas_lights_ui_visible', isHidden ? 'false' : 'true');
     }
 
     // Restore UI State on Init
@@ -568,20 +801,10 @@ export function setupUI() {
 
     if (toggleUIBtn) {
         toggleUIBtn.addEventListener('click', toggleUI);
-        toggleUIBtn.addEventListener('mousedown', (e) => {
-            console.log('Toggle UI mousedown detected');
-        });
-        toggleUIBtn.addEventListener('touchstart', toggleUI, { passive: true });
-        console.log('✅ Toggle UI button handlers attached');
     }
 
     if (floatingUIBtn) {
         floatingUIBtn.addEventListener('click', toggleUI);
-        floatingUIBtn.addEventListener('mousedown', (e) => {
-            console.log('Floating UI mousedown detected');
-        });
-        floatingUIBtn.addEventListener('touchstart', toggleUI, { passive: true });
-        console.log('✅ Floating UI button handlers attached');
     }
 
     // Keyboard shortcut: H key to toggle UI
@@ -594,10 +817,13 @@ export function setupUI() {
         }
     });
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SECTION 3.5: PRESET MANAGEMENT (Save/Export/Import)
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Save preset
     if (saveBtn) {
         const handleSave = async () => {
-            console.log('✅ Save Preset button triggered');
 
             saveBtn.style.opacity = '0.7';
 
@@ -609,7 +835,7 @@ export function setupUI() {
                     CONFIG[m.key] = el.checked;
                 } else if (m.type === 'int') {
                     CONFIG[m.key] = parseInt(el.value, 10);
-                } else if (m.key === 'ACTIVE_THEME' || m.key === 'WIRE_THEME' || m.key === 'QUALITY') {
+                } else if (m.key === 'ACTIVE_THEME' || m.key === 'WIRE_THEME' || m.key === 'QUALITY' || m.key === 'ANIMATION_STYLE') {
                     CONFIG[m.key] = el.value;
                 } else {
                     CONFIG[m.key] = parseFloat(el.value);
@@ -619,9 +845,15 @@ export function setupUI() {
             const presetName = await customPrompt('Name your custom preset:', 'My Custom Preset');
 
             if (presetName && presetName.trim()) {
-                const customPresets = JSON.parse(localStorage.getItem('custom_presets') || '{}');
+                let customPresets = {};
+                try {
+                    customPresets = JSON.parse(localStorage.getItem('custom_presets') || '{}');
+                } catch (e) {
+                    logError('Presets', 'Failed to parse custom_presets', e);
+                    customPresets = {};
+                }
                 customPresets[presetName.trim()] = { ...CONFIG };
-                localStorage.setItem('custom_presets', JSON.stringify(customPresets));
+                safeSetItem('custom_presets', JSON.stringify(customPresets));
 
                 showToast(`Preset "${presetName}" saved!`, 'success');
 
@@ -632,18 +864,11 @@ export function setupUI() {
         };
 
         saveBtn.addEventListener('click', handleSave);
-        saveBtn.addEventListener('mousedown', (e) => {
-            console.log('Save Preset mousedown detected');
-        });
-        saveBtn.addEventListener('touchstart', handleSave, { passive: true });
-
-        console.log('✅ Save Preset button handlers attached');
     }
 
     // Export preset
     if (exportBtn) {
         const handleExport = async () => {
-            console.log('✅ Export button triggered');
 
             exportBtn.style.opacity = '0.7';
 
@@ -655,22 +880,29 @@ export function setupUI() {
                     CONFIG[m.key] = el.checked;
                 } else if (m.type === 'int') {
                     CONFIG[m.key] = parseInt(el.value, 10);
-                } else if (m.key === 'ACTIVE_THEME' || m.key === 'WIRE_THEME' || m.key === 'QUALITY') {
+                } else if (m.key === 'ACTIVE_THEME' || m.key === 'WIRE_THEME' || m.key === 'QUALITY' || m.key === 'ANIMATION_STYLE') {
                     CONFIG[m.key] = el.value;
                 } else {
                     CONFIG[m.key] = parseFloat(el.value);
                 }
             });
 
-            const exportData = btoa(JSON.stringify(CONFIG));
-            const exportString = `XMAS:${exportData}`;
+            // Build compact export object using short keys
+            const compactConfig = {};
+            for (const [longKey, shortKey] of Object.entries(KEY_MAP)) {
+                if (CONFIG[longKey] !== undefined) {
+                    compactConfig[shortKey] = CONFIG[longKey];
+                }
+            }
+
+            const exportString = `XMAS:${btoa(JSON.stringify(compactConfig))}`;
 
             let clipboardSuccess = false;
             try {
                 await navigator.clipboard.writeText(exportString);
                 clipboardSuccess = true;
             } catch (e) {
-                console.log('Clipboard API failed, using textarea');
+                // Clipboard API failed, fallback to textarea
             }
 
             if (clipboardSuccess) {
@@ -688,18 +920,11 @@ export function setupUI() {
         };
 
         exportBtn.addEventListener('click', handleExport);
-        exportBtn.addEventListener('mousedown', (e) => {
-            console.log('Export mousedown detected');
-        });
-        exportBtn.addEventListener('touchstart', handleExport, { passive: true });
-
-        console.log('✅ Export button handlers attached');
     }
 
     // Import preset
     if (importBtn) {
         const handleImport = async () => {
-            console.log('✅ Import button triggered');
 
             importBtn.style.opacity = '0.7';
 
@@ -720,7 +945,20 @@ export function setupUI() {
                 }
 
                 const encodedData = importString.substring(5);
-                const importedConfig = JSON.parse(atob(encodedData));
+                const decodedConfig = JSON.parse(atob(encodedData));
+
+                // Convert short keys to long keys if needed
+                const importedConfig = {};
+                for (const [key, value] of Object.entries(decodedConfig)) {
+                    // Check if it's a short key
+                    const longKey = REVERSE_KEY_MAP[key];
+                    if (longKey) {
+                        importedConfig[longKey] = value;
+                    } else {
+                        // Already a long key (backwards compatible with old format)
+                        importedConfig[key] = value;
+                    }
+                }
 
                 const presetName = await customPrompt(
                     'Name this imported preset (leave blank to apply without saving):',
@@ -728,7 +966,12 @@ export function setupUI() {
                 );
 
                 if (!presetName || !presetName.trim()) {
-                    Object.assign(CONFIG, importedConfig);
+                    // Validate: only copy keys that exist in CONFIG
+                    for (const key of Object.keys(importedConfig)) {
+                        if (key in CONFIG) {
+                            CONFIG[key] = importedConfig[key];
+                        }
+                    }
                     updateUIFromConfig();
                     applyChanges();
                     await customAlert('Applied!', 'Preset applied (not saved)');
@@ -738,7 +981,7 @@ export function setupUI() {
 
                 const customPresets = JSON.parse(localStorage.getItem('custom_presets') || '{}');
                 customPresets[presetName.trim()] = importedConfig;
-                localStorage.setItem('custom_presets', JSON.stringify(customPresets));
+                safeSetItem('custom_presets', JSON.stringify(customPresets));
 
                 Object.assign(CONFIG, importedConfig);
                 updateUIFromConfig();
@@ -750,24 +993,24 @@ export function setupUI() {
                 importBtn.style.opacity = '1';
 
             } catch (e) {
-                console.error('Import failed:', e);
+                logError('Presets', 'Import failed', e);
                 await customAlert('Error', 'Invalid preset code!\n\nPlease check the code and try again.');
                 importBtn.style.opacity = '1';
             }
         };
 
         importBtn.addEventListener('click', handleImport);
-        importBtn.addEventListener('mousedown', (e) => {
-            console.log('Import mousedown detected');
-        });
-        importBtn.addEventListener('touchstart', handleImport, { passive: true });
-
-        console.log('✅ Import button handlers attached');
     }
 
     // Load custom presets
     function loadCustomPresets() {
-        const customPresets = JSON.parse(localStorage.getItem('custom_presets') || '{}');
+        let customPresets = {};
+        try {
+            customPresets = JSON.parse(localStorage.getItem('custom_presets') || '{}');
+        } catch (e) {
+            logError('Presets', 'Failed to parse custom_presets', e);
+            customPresets = {};
+        }
         const presetBar = document.querySelector('.preset-bar');
         const divider = document.querySelector('.custom-divider');
 
@@ -805,7 +1048,7 @@ export function setupUI() {
 
                 if (confirmed) {
                     delete customPresets[presetName];
-                    localStorage.setItem('custom_presets', JSON.stringify(customPresets));
+                    safeSetItem('custom_presets', JSON.stringify(customPresets));
                     loadCustomPresets();
                     showToast('Preset deleted', 'error');
                 }
@@ -817,238 +1060,15 @@ export function setupUI() {
 
     loadCustomPresets();
 
-    // PRESET SYSTEM
-    const presets = {
-        classic: {
-            ACTIVE_THEME: 'CHRISTMAS',
-            WIRE_THEME: 'CHRISTMAS_PAIR',
-            COLOR_CYCLING_ENABLED: true,
-            AVOID_ADJACENT_COLORS: false,
-            NUM_PINS: 7,
-            SAG_AMPLITUDE: 0.5,
-            TENSION: 0.0,
-            LIGHTS_PER_SEGMENT: 10,
-            BULB_SCALE: 0.08,
-            EMISSIVE_INTENSITY: 0.0,
-            POSTFX_ENABLED: true,
-            BLOOM_STRENGTH: 1.0,
-            BLOOM_RADIUS: 0.5,
-            BLOOM_THRESHOLD: 0.5,
-            BLOOM_INTENSITY_COMPOSITE: 0.9,
-            GLASS_OPACITY: 0.25,
-            GLASS_ROUGHNESS: 1.0,
-            GLASS_IOR: 2.5,
-            WIRE_TWISTS: 120,
-            WIRE_THICKNESS: 0.017,
-            WIRE_OFFSET: 0.02,
-            WIRE_SEPARATION: 0.02,
-            ANIMATION_SPEED: 0.6,
-            SWAY_X: 0.05,
-            SWAY_Z: 0.1,
-            TWINKLE_SPEED: 0.03,
-            TWINKLE_MIN_INTENSITY: 0.4,
-            TWINKLE_RANDOMNESS: 0.3,
-            SNOW_ENABLED: false,
-            SNOW_COUNT: 800,
-            SNOW_SPEED: 0.012,
-            SNOW_SIZE: 0.025,
-            SNOW_DRIFT: 0.015,
-            STARS_ENABLED: false,
-            STARS_COUNT: 500,
-            STARS_SIZE: 1.0,
-            STARS_OPACITY: 0.8,
-            STARS_TWINKLE_SPEED: 1.0,
-            BACKGROUND_ENABLED: true,
-            AMBIENT_INTENSITY: 0.5,
-            SHADOWS_ENABLED: true,
-            CAMERA_DISTANCE: 16,
-            CAMERA_HEIGHT: 1,
-            QUALITY: 'medium'
-        },
-        party: {
-            ACTIVE_THEME: 'RAINBOW',
-            WIRE_THEME: 'RAINBOW',
-            COLOR_CYCLING_ENABLED: true,
-            AVOID_ADJACENT_COLORS: false,
-            NUM_PINS: 8,
-            SAG_AMPLITUDE: 1.0,
-            TENSION: 0.3,
-            LIGHTS_PER_SEGMENT: 20,
-            BULB_SCALE: 0.09,
-            EMISSIVE_INTENSITY: 2.0,
-            POSTFX_ENABLED: true,
-            BLOOM_STRENGTH: 1.8,
-            BLOOM_RADIUS: 0.8,
-            BLOOM_THRESHOLD: 0.3,
-            BLOOM_INTENSITY_COMPOSITE: 1.2,
-            GLASS_OPACITY: 0.4,
-            GLASS_ROUGHNESS: 0.1,
-            GLASS_IOR: 1.7,
-            WIRE_TWISTS: 120,
-            WIRE_THICKNESS: 0.02,
-            WIRE_SEPARATION: 0.05,
-            ANIMATION_SPEED: 1.5,
-            SWAY_X: 0.05,
-            SWAY_Z: 0.25,
-            TWINKLE_SPEED: 0.1,
-            TWINKLE_MIN_INTENSITY: 0.0,
-            TWINKLE_RANDOMNESS: 1.5,
-            SNOW_ENABLED: false,
-            SNOW_COUNT: 1500,
-            SNOW_SPEED: 0.025,
-            SNOW_SIZE: 0.02,
-            SNOW_DRIFT: 0.04,
-            STARS_ENABLED: false,
-            STARS_COUNT: 800,
-            STARS_SIZE: 1.5,
-            STARS_OPACITY: 0.7,
-            STARS_TWINKLE_SPEED: 1.2,
-            BACKGROUND_ENABLED: false,
-            AMBIENT_INTENSITY: 0.7,
-            SHADOWS_ENABLED: true,
-            CAMERA_DISTANCE: 14,
-            CAMERA_HEIGHT: 0,
-            QUALITY: 'high'
-        },
-        neon: {
-            ACTIVE_THEME: 'NEON_NIGHTS',
-            WIRE_THEME: 'BLACK_PAIR',
-            COLOR_CYCLING_ENABLED: true,
-            AVOID_ADJACENT_COLORS: true,
-            NUM_PINS: 9,
-            SAG_AMPLITUDE: 0.3,
-            TENSION: 0.5,
-            LIGHTS_PER_SEGMENT: 15,
-            BULB_SCALE: 0.07,
-            EMISSIVE_INTENSITY: 3.5,
-            POSTFX_ENABLED: true,
-            BLOOM_STRENGTH: 2.0,
-            BLOOM_RADIUS: 1.0,
-            BLOOM_THRESHOLD: 0.2,
-            BLOOM_INTENSITY_COMPOSITE: 1.5,
-            GLASS_OPACITY: 0.6,
-            GLASS_ROUGHNESS: 0.05,
-            GLASS_IOR: 1.5,
-            WIRE_TWISTS: 100,
-            WIRE_THICKNESS: 0.015,
-            WIRE_OFFSET: 0.015,
-            WIRE_SEPARATION: 0.03,
-            ANIMATION_SPEED: 2.0,
-            SWAY_X: 0.02,
-            SWAY_Z: 0.15,
-            TWINKLE_SPEED: 0.15,
-            TWINKLE_MIN_INTENSITY: 0.2,
-            TWINKLE_RANDOMNESS: 2.5,
-            SNOW_ENABLED: false,
-            SNOW_COUNT: 500,
-            SNOW_SPEED: 0.008,
-            SNOW_SIZE: 0.015,
-            SNOW_DRIFT: 0.01,
-            STARS_ENABLED: false,
-            STARS_COUNT: 1200,
-            STARS_SIZE: 2.0,
-            STARS_OPACITY: 0.9,
-            STARS_TWINKLE_SPEED: 1.5,
-            BACKGROUND_ENABLED: false,
-            AMBIENT_INTENSITY: 0.3,
-            SHADOWS_ENABLED: false,
-            CAMERA_DISTANCE: 15,
-            CAMERA_HEIGHT: 0.5,
-            QUALITY: 'high'
-        },
-        vintage: {
-            ACTIVE_THEME: 'VINTAGE',
-            WIRE_THEME: 'BROWN',
-            COLOR_CYCLING_ENABLED: false,
-            AVOID_ADJACENT_COLORS: false,
-            NUM_PINS: 6,
-            SAG_AMPLITUDE: 0.8,
-            TENSION: 0.1,
-            LIGHTS_PER_SEGMENT: 8,
-            BULB_SCALE: 0.1,
-            EMISSIVE_INTENSITY: 0.5,
-            POSTFX_ENABLED: true,
-            BLOOM_STRENGTH: 0.8,
-            BLOOM_RADIUS: 0.4,
-            BLOOM_THRESHOLD: 0.6,
-            BLOOM_INTENSITY_COMPOSITE: 0.7,
-            GLASS_OPACITY: 0.15,
-            GLASS_ROUGHNESS: 0.8,
-            GLASS_IOR: 2.0,
-            WIRE_TWISTS: 80,
-            WIRE_THICKNESS: 0.02,
-            WIRE_OFFSET: 0.025,
-            WIRE_SEPARATION: 0.025,
-            ANIMATION_SPEED: 0.3,
-            SWAY_X: 0.08,
-            SWAY_Z: 0.05,
-            TWINKLE_SPEED: 0.02,
-            TWINKLE_MIN_INTENSITY: 0.6,
-            TWINKLE_RANDOMNESS: 0.2,
-            SNOW_ENABLED: false,
-            SNOW_COUNT: 600,
-            SNOW_SPEED: 0.01,
-            SNOW_SIZE: 0.03,
-            SNOW_DRIFT: 0.012,
-            STARS_ENABLED: false,
-            STARS_COUNT: 300,
-            STARS_SIZE: 0.8,
-            STARS_OPACITY: 0.6,
-            STARS_TWINKLE_SPEED: 0.8,
-            BACKGROUND_ENABLED: true,
-            AMBIENT_INTENSITY: 0.6,
-            SHADOWS_ENABLED: true,
-            CAMERA_DISTANCE: 17,
-            CAMERA_HEIGHT: 1.5,
-            QUALITY: 'medium'
-        },
-        winter: {
-            ACTIVE_THEME: 'ARCTIC',
-            WIRE_THEME: 'SILVER_PAIR',
-            COLOR_CYCLING_ENABLED: false,
-            AVOID_ADJACENT_COLORS: false,
-            NUM_PINS: 7,
-            SAG_AMPLITUDE: 0.4,
-            TENSION: 0.2,
-            LIGHTS_PER_SEGMENT: 12,
-            BULB_SCALE: 0.075,
-            EMISSIVE_INTENSITY: 1.0,
-            POSTFX_ENABLED: true,
-            BLOOM_STRENGTH: 1.2,
-            BLOOM_RADIUS: 0.6,
-            BLOOM_THRESHOLD: 0.4,
-            BLOOM_INTENSITY_COMPOSITE: 1.0,
-            GLASS_OPACITY: 0.3,
-            GLASS_ROUGHNESS: 0.3,
-            GLASS_IOR: 2.2,
-            WIRE_TWISTS: 110,
-            WIRE_THICKNESS: 0.018,
-            WIRE_OFFSET: 0.02,
-            WIRE_SEPARATION: 0.022,
-            ANIMATION_SPEED: 0.8,
-            SWAY_X: 0.03,
-            SWAY_Z: 0.12,
-            TWINKLE_SPEED: 0.05,
-            TWINKLE_MIN_INTENSITY: 0.3,
-            TWINKLE_RANDOMNESS: 0.8,
-            SNOW_ENABLED: true,
-            SNOW_COUNT: 2000,
-            SNOW_SPEED: 0.015,
-            SNOW_SIZE: 0.03,
-            SNOW_DRIFT: 0.02,
-            STARS_ENABLED: true,
-            STARS_COUNT: 600,
-            STARS_SIZE: 1.2,
-            STARS_OPACITY: 0.85,
-            STARS_TWINKLE_SPEED: 1.1,
-            BACKGROUND_ENABLED: true,
-            AMBIENT_INTENSITY: 0.55,
-            SHADOWS_ENABLED: true,
-            CAMERA_DISTANCE: 15,
-            CAMERA_HEIGHT: 0.8,
-            QUALITY: 'high'
-        }
-    };
+    // Expose for tutorial to use
+    window.loadCustomPresets = loadCustomPresets;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SECTION 3.6: BUILT-IN PRESET DEFINITIONS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // PRESET SYSTEM - uses imported PRESETS from presets.js
+    const presets = PRESETS;
 
     // Built-in preset buttons
     document.querySelectorAll('.preset-btn:not(.custom-preset-btn)').forEach(btn => {
@@ -1068,49 +1088,49 @@ export function setupUI() {
                 CONFIG.BACKGROUND_ENABLED = Math.random() > 0.5;
                 CONFIG.STARS_ENABLED = Math.random() > 0.5;
 
-                CONFIG.NUM_PINS = Math.floor(Math.random() * 15) + 3;
-                CONFIG.SAG_AMPLITUDE = Math.random() * 8;
-                CONFIG.TENSION = Math.random() * 1.5;
-                CONFIG.LIGHTS_PER_SEGMENT = Math.floor(Math.random() * 25) + 1;
+                // First quarter of ranges for more reasonable random values
+                CONFIG.NUM_PINS = Math.floor(Math.random() * 4) + 3;  // 3-6 (was 3-17)
+                CONFIG.SAG_AMPLITUDE = Math.random() * 2;  // 0-2 (was 0-8)
+                CONFIG.TENSION = Math.random() * 0.375;  // 0-0.375 (was 0-1.5)
+                CONFIG.LIGHTS_PER_SEGMENT = Math.floor(Math.random() * 6) + 1;  // 1-6 (was 1-25)
 
-                CONFIG.BULB_SCALE = 0.05 + Math.random() * 0.3;
-                CONFIG.BLOOM_STRENGTH = 0.5 + Math.random() * 2.0;
-                CONFIG.BLOOM_RADIUS = 0.2 + Math.random() * 1.0;
-                CONFIG.BLOOM_THRESHOLD = Math.random() * 0.8;
-                CONFIG.BLOOM_INTENSITY_COMPOSITE = 0.5 + Math.random() * 1.5;
-                CONFIG.EMISSIVE_INTENSITY = Math.random() * 2.5;
+                CONFIG.BULB_SCALE = 0.05 + Math.random() * 0.075;  // 0.05-0.125 (was 0.05-0.35)
+                CONFIG.BLOOM_STRENGTH = 0.5 + Math.random() * 0.5;  // 0.5-1.0 (was 0.5-2.5)
+                CONFIG.BLOOM_RADIUS = 0.2 + Math.random() * 0.25;  // 0.2-0.45 (was 0.2-1.2)
+                CONFIG.BLOOM_THRESHOLD = Math.random() * 0.2;  // 0-0.2 (was 0-0.8)
+                CONFIG.BLOOM_INTENSITY = 0.5 + Math.random() * 0.375;  // 0.5-0.875 (was 0.5-2.0)
+                CONFIG.EMISSIVE_INTENSITY = Math.random() * 0.625;  // 0-0.625 (was 0-2.5)
 
-                CONFIG.GLASS_OPACITY = 0.1 + Math.random() * 0.7;
-                CONFIG.GLASS_ROUGHNESS = Math.random();
-                CONFIG.GLASS_IOR = 1.0 + Math.random() * 1.3;
+                CONFIG.GLASS_OPACITY = 0.1 + Math.random() * 0.175;  // 0.1-0.275 (was 0.1-0.8)
+                CONFIG.GLASS_ROUGHNESS = Math.random() * 0.25;  // 0-0.25 (was 0-1.0)
+                CONFIG.GLASS_IOR = 1.0 + Math.random() * 0.325;  // 1.0-1.325 (was 1.0-2.3)
 
-                CONFIG.WIRE_TWISTS = Math.floor(Math.random() * 200);
-                CONFIG.WIRE_THICKNESS = 0.005 + Math.random() * 0.05;
-                CONFIG.WIRE_SEPARATION = 0.005 + Math.random() * 0.08;
+                CONFIG.WIRE_TWISTS = Math.floor(Math.random() * 50);  // 0-50 (was 0-200)
+                CONFIG.WIRE_THICKNESS = 0.005 + Math.random() * 0.0125;  // 0.005-0.0175 (was 0.005-0.055)
+                CONFIG.WIRE_SEPARATION = 0.005 + Math.random() * 0.02;  // 0.005-0.025 (was 0.005-0.085)
 
-                CONFIG.ANIMATION_SPEED = Math.random() * 1.5;
-                CONFIG.SWAY_Z = Math.random() * 0.4;
+                CONFIG.ANIMATION_SPEED = Math.random() * 0.375;  // 0-0.375 (was 0-1.5)
+                CONFIG.SWAY_Z = Math.random() * 0.1;  // 0-0.1 (was 0-0.4)
                 CONFIG.SWAY_X = CONFIG.SWAY_Z * 0.2;
 
-                CONFIG.TWINKLE_SPEED = Math.random() * 0.12;
-                CONFIG.TWINKLE_MIN_INTENSITY = Math.random() * 0.4;
-                CONFIG.TWINKLE_RANDOMNESS = Math.random() * 1.8;
+                CONFIG.TWINKLE_SPEED = Math.random() * 0.03;  // 0-0.03 (was 0-0.12)
+                CONFIG.TWINKLE_MIN_INTENSITY = Math.random() * 0.1;  // 0-0.1 (was 0-0.4)
+                CONFIG.TWINKLE_RANDOMNESS = Math.random() * 0.45;  // 0-0.45 (was 0-1.8)
 
                 if (CONFIG.SNOW_ENABLED) {
-                    CONFIG.SNOW_COUNT = Math.floor(Math.random() * 2500) + 500;
-                    CONFIG.SNOW_SPEED = 0.005 + Math.random() * 0.03;
-                    CONFIG.SNOW_SIZE = 0.01 + Math.random() * 0.05;
-                    CONFIG.SNOW_DRIFT = Math.random() * 0.06;
+                    CONFIG.SNOW_COUNT = Math.floor(Math.random() * 625) + 500;  // 500-1125 (was 500-3000)
+                    CONFIG.SNOW_SPEED = 0.005 + Math.random() * 0.0075;  // 0.005-0.0125 (was 0.005-0.035)
+                    CONFIG.SNOW_SIZE = 0.01 + Math.random() * 0.0125;  // 0.01-0.0225 (was 0.01-0.06)
+                    CONFIG.SNOW_DRIFT = Math.random() * 0.015;  // 0-0.015 (was 0-0.06)
                 }
 
-                CONFIG.AMBIENT_INTENSITY = 0.2 + Math.random() * 0.7;
+                CONFIG.AMBIENT_INTENSITY = 1.0 + Math.random() * 0.5;  // 1.0-1.5 (was 1.0-2.0)
 
-                CONFIG.CAMERA_DISTANCE = 8 + Math.random() * 25;
-                CONFIG.CAMERA_HEIGHT = -5 + Math.random() * 15;
+                CONFIG.CAMERA_DISTANCE = 8 + Math.random() * 6.25;  // 8-14.25 (was 8-33)
+                CONFIG.CAMERA_HEIGHT = -5 + Math.random() * 3.75;  // -5 to -1.25 (was -5 to 10)
 
-                console.log('🎲 Surprise! Generated random configuration');
             } else if (presets[presetName]) {
-                currentPresetName = presetName;
+                setCurrentPresetName(presetName);
 
                 const presetData = presets[presetName];
 
@@ -1131,6 +1151,20 @@ export function setupUI() {
                 };
 
                 Object.assign(CONFIG, presetData);
+
+                // Update camera system for new preset camera values
+                if (window.lastLoadedCameraData) {
+                    window.lastLoadedCameraData.distance = CONFIG.CAMERA_DISTANCE || 14;
+                    window.lastLoadedCameraData.height = CONFIG.CAMERA_HEIGHT || 0;
+                    window.lastLoadedCameraData.pan = CONFIG.CAMERA_X || 0;
+                    // Recalculate visible dimensions for new distance
+                    const tanFov = Math.tan((40 * Math.PI / 180) / 2);
+                    window.lastLoadedCameraData.refVisibleHeight = 2 * tanFov * window.lastLoadedCameraData.distance;
+                    window.lastLoadedCameraData.refVisibleWidth = window.lastLoadedCameraData.refVisibleHeight * REFERENCE_RESOLUTION.aspect;
+                }
+                // Reset camera offset (preset defines absolute position)
+                window.cameraOffset = { distance: 0, height: 0, pan: 0 };
+                updateCameraBase();
 
                 CONFIG.SNOW_ENABLED = userPref.snowEnabled || false;
                 CONFIG.STARS_ENABLED = userPref.starsEnabled || false;
@@ -1169,6 +1203,10 @@ export function setupUI() {
         });
     });
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  SECTION 3.7: LIVE UPDATES & INPUT HANDLERS
+    // ─────────────────────────────────────────────────────────────────────────
+
     // INLINE VALUE UPDATES & VISUAL FILL
     document.querySelectorAll('input[type="range"]').forEach(slider => {
         updateSliderFill(slider);
@@ -1193,15 +1231,40 @@ export function setupUI() {
         }
 
         updateTimeout = setTimeout(() => {
+            logUser('triggerLiveUpdate() → applyChanges()');
             applyChanges();
         }, 300);
     }
 
     document.querySelectorAll('input[type="range"]').forEach(slider => {
         slider.addEventListener('input', () => {
+            logUser(`Slider input: ${slider.id}`, { value: slider.value });
+            // Immediate updates for particle settings (no debounce needed)
+            if (slider.id === 'snow-speed-slider') {
+                CONFIG.SNOW_SPEED = parseFloat(slider.value);
+            } else if (slider.id === 'snow-size-slider') {
+                CONFIG.SNOW_SIZE = parseFloat(slider.value);
+            } else if (slider.id === 'drift-slider') {
+                CONFIG.SNOW_DRIFT = parseFloat(slider.value);
+            }
             triggerLiveUpdate();
         });
     });
+
+    // Dynamic lights per span max based on pin count AND bulb size
+    // Uses bilinear interpolation (see calculateDynamicLightsMax above)
+    const pinsSlider = document.getElementById('pins-slider');
+    const bulbSizeSlider = document.getElementById('bulb-size-slider');
+    const lightsSlider = document.getElementById('lights-slider');
+
+    if (pinsSlider) {
+        pinsSlider.addEventListener('input', updateLightsSliderMax);
+    }
+    if (bulbSizeSlider) {
+        bulbSizeSlider.addEventListener('input', updateLightsSliderMax);
+    }
+    // Initialize on load
+    setTimeout(updateLightsSliderMax, 100);
 
     document.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
         checkbox.addEventListener('change', () => {
@@ -1215,70 +1278,10 @@ export function setupUI() {
         });
     });
 
-    console.log('✅ Live updates enabled - changes apply automatically');
+    // Initialize proximity hover effect for title
+    initProximityHover();
 
-    // Apply button
-    const applyBtn = document.getElementById('apply-btn');
-    if (applyBtn) {
-        const handleApply = () => {
-            console.log('✅ Apply button triggered');
+    // Initialize tutorial system (triggers on first visit or logo click)
+    initTutorial();
 
-            applyBtn.style.transform = 'scale(0.95)';
-            applyBtn.textContent = 'Applying...';
-
-            setTimeout(() => {
-                applyChanges();
-                applyBtn.textContent = 'Applied!';
-                applyBtn.style.transform = 'scale(1)';
-
-                setTimeout(() => {
-                    applyBtn.textContent = 'Apply Changes';
-                }, 1000);
-            }, 100);
-        };
-
-        applyBtn.addEventListener('click', handleApply);
-        applyBtn.addEventListener('mousedown', (e) => {
-            console.log('Apply mousedown detected');
-        });
-        applyBtn.addEventListener('touchstart', handleApply, { passive: true });
-
-        applyBtn.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handleApply();
-            }
-        });
-
-        console.log('✅ Apply button handlers attached');
-    } else {
-        console.error('❌ Apply button not found!');
-    }
-
-    // Reset button
-    const resetBtn = document.getElementById('reset-btn');
-    if (resetBtn) {
-        resetBtn.addEventListener('click', async () => {
-            const confirmed = await customConfirm(
-                'Reset Settings',
-                'Reset all settings to defaults?\n\nThis cannot be undone.'
-            );
-
-            if (confirmed) {
-                console.log('Reset confirmed');
-                resetConfig();
-                updateUIFromConfig();
-                applyChanges();
-                showToast('Settings reset to defaults', 'info');
-            }
-        });
-        console.log('✅ Reset button handlers attached');
-    }
-
-    console.log('🎄 UI fully initialized');
-}
-
-export function updateUIFromConfig() {
-    // This function is exported for external use if needed
-    console.log('UpdateUIFromConfig called');
 }

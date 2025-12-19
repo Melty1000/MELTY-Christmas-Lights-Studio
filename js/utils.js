@@ -4,6 +4,44 @@
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 import { CONFIG } from './config.js';
+import * as THREE from 'three';
+import { logInfo, logWarn } from './debug.js';
+
+// =========================================
+//  OBS BROWSER DETECTION
+// =========================================
+// Detect if running in OBS Browser Source (CEF)
+export function isOBSBrowser() {
+    const ua = navigator.userAgent.toLowerCase();
+    // OBS uses CEF which includes "obs" in UA, or check for specific OBS behaviors
+    return ua.includes('obs') ||
+        ua.includes('cef') ||
+        (typeof window.obsstudio !== 'undefined');
+}
+
+// Cache detection result
+export const IS_OBS = isOBSBrowser();
+
+// =========================================
+//  SAFE LOCALSTORAGE HELPER
+// =========================================
+/**
+ * Safely write to localStorage with quota protection
+ * @param {string} key - Storage key
+ * @param {string} value - Value to store
+ * @returns {boolean} - True if successful, false if failed
+ */
+export function safeSetItem(key, value) {
+    try {
+        localStorage.setItem(key, value);
+        return true;
+    } catch (e) {
+        // QuotaExceededError or SecurityError
+        logWarn('Storage', `localStorage.setItem failed for "${key}": ${e.message}`);
+        return false;
+    }
+}
+
 
 // =========================================
 //  SLIDER UTILITIES
@@ -20,46 +58,101 @@ export const updateSliderFill = (slider) => {
 // =========================================
 //  TOAST NOTIFICATION SYSTEM
 // =========================================
-export function showToast(message, type = 'info', duration = 3000) {
-    const container = document.getElementById('toast-container');
-    if (!container) return;
+// Track active toasts to prevent duplicates
+const activeToasts = new Map();
+let toastIdCounter = 0;
 
+export function showToast(message, type = 'info', duration = 3000, options = {}) {
+    logInfo(`showToast called: "${message}" (type=${type}, persistent=${options.persistent || false})`);
+    const container = document.getElementById('toast-container');
+    if (!container) return null;
+
+    // Deduplication: if same message is already showing, don't create another
+    if (activeToasts.has(message) && !options.allowDuplicate) {
+        return activeToasts.get(message).id;
+    }
+
+    const toastId = ++toastIdCounter;
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
+    toast.dataset.toastId = toastId;
 
     // Icons
     let icon = 'ℹ️';
     if (type === 'success') icon = '✅';
     if (type === 'warning') icon = '⚠️';
     if (type === 'error') icon = '❌';
+    if (type === 'progress') icon = '⏳';
 
     toast.innerHTML = `
         <span class="toast-icon">${icon}</span>
         <span class="toast-message">${message}</span>
+        ${options.progress !== undefined ? `<span class="toast-progress">${options.progress}%</span>` : ''}
     `;
 
     container.appendChild(toast);
+    activeToasts.set(message, { id: toastId, element: toast });
+    logInfo(`Toast created with id=${toastId}`);
 
     // Animate In
     requestAnimationFrame(() => {
         toast.classList.add('visible');
     });
 
-    // Auto Dismiss
-    setTimeout(() => {
-        toast.classList.add('hiding');
-        toast.addEventListener('transitionend', () => {
-            if (toast.parentElement) toast.remove();
-        });
-    }, duration);
+    // Auto Dismiss (unless persistent)
+    if (!options.persistent) {
+        setTimeout(() => {
+            dismissToastElement(toast, message);
+        }, duration);
+    }
 
     // Click to Dismiss
     toast.addEventListener('click', () => {
-        toast.classList.add('hiding');
-        setTimeout(() => {
-            if (toast.parentElement) toast.remove();
-        }, 400);
+        dismissToastElement(toast, message);
     });
+
+    return toastId;
+}
+
+function dismissToastElement(toast, message) {
+    logInfo(`dismissToast: "${message}"`);
+    toast.classList.add('hiding');
+    activeToasts.delete(message);
+    toast.addEventListener('transitionend', () => {
+        if (toast.parentElement) toast.remove();
+    });
+}
+
+export function dismissToast(toastId) {
+    for (const [message, data] of activeToasts.entries()) {
+        if (data.id === toastId) {
+            dismissToastElement(data.element, message);
+            return true;
+        }
+    }
+    return false;
+}
+
+export function updateToastProgress(toastId, progress, newMessage = null) {
+    logInfo(`updateToastProgress: id=${toastId}, progress=${Math.round(progress)}%${newMessage ? `, newMsg="${newMessage}"` : ''}`);
+    for (const [message, data] of activeToasts.entries()) {
+        if (data.id === toastId) {
+            const progressEl = data.element.querySelector('.toast-progress');
+            if (progressEl) {
+                progressEl.textContent = `${Math.round(progress)}%`;
+            }
+            if (newMessage) {
+                const msgEl = data.element.querySelector('.toast-message');
+                if (msgEl) msgEl.textContent = newMessage;
+                // Update map key
+                activeToasts.delete(message);
+                activeToasts.set(newMessage, data);
+            }
+            return true;
+        }
+    }
+    logWarn(`updateToastProgress: toast id=${toastId} NOT FOUND!`);
+    return false;
 }
 
 // =========================================
@@ -79,7 +172,7 @@ export function getBulbPalette(hex) {
 //  CURVE CLASSES
 // =========================================
 export class HelixCurve extends THREE.Curve {
-    getPoint(t) {
+    getPoint(t, optionalTarget = new THREE.Vector3()) {
         const turns = 6.0;
         const angle = t * Math.PI * 1.25 * turns;
         const radius = 0.2;
@@ -87,24 +180,37 @@ export class HelixCurve extends THREE.Curve {
         const x = Math.cos(angle) * radius;
         const z = Math.sin(angle) * radius;
         const y = (t * height) + 0.3;
-        return new THREE.Vector3(x, y, z);
+        return optionalTarget.set(x, y, z);
     }
 }
 
 // =========================================
 // CUSTOM MODAL SYSTEM (OBS-COMPATIBLE)
 // =========================================
+// Cache modal elements (lazy initialized on first use)
+let _modalCache = null;
+function getModalElements() {
+    if (!_modalCache) {
+        _modalCache = {
+            modal: document.getElementById('custom-modal'),
+            title: document.getElementById('modal-title'),
+            message: document.getElementById('modal-message'),
+            input: document.getElementById('modal-input'),
+            textarea: document.getElementById('modal-textarea'),
+            inputContainer: document.getElementById('modal-input-container'),
+            textareaContainer: document.getElementById('modal-textarea-container'),
+            okBtn: document.getElementById('modal-ok-btn'),
+            cancelBtn: document.getElementById('modal-cancel-btn')
+        };
+    }
+    return _modalCache;
+}
+
 export function showModal(title, message, options = {}) {
     return new Promise((resolve) => {
-        const modal = document.getElementById('custom-modal');
-        const modalTitle = document.getElementById('modal-title');
-        const modalMessage = document.getElementById('modal-message');
-        const modalInput = document.getElementById('modal-input');
-        const modalTextarea = document.getElementById('modal-textarea');
-        const modalInputContainer = document.getElementById('modal-input-container');
-        const modalTextareaContainer = document.getElementById('modal-textarea-container');
-        const okBtn = document.getElementById('modal-ok-btn');
-        const cancelBtn = document.getElementById('modal-cancel-btn');
+        const { modal, title: modalTitle, message: modalMessage, input: modalInput,
+            textarea: modalTextarea, inputContainer: modalInputContainer,
+            textareaContainer: modalTextareaContainer, okBtn, cancelBtn } = getModalElements();
 
         // Set content
         modalTitle.textContent = title;
@@ -217,4 +323,152 @@ export async function customAlert(title, message) {
 
 export async function customConfirm(title, message) {
     return await showModal(title, message, { okText: 'Confirm' });
+}
+
+// =========================================
+//  PROXIMITY HOVER EFFECT
+// =========================================
+export function initProximityHover() {
+    const container = document.getElementById('title-container');
+    const textEl = document.getElementById('title-text');
+    const emojiEl = container?.querySelector('.emoji');
+
+    if (!container || !textEl) return;
+
+    // Split text into individual character spans
+    const text = textEl.textContent;
+    textEl.innerHTML = text.split('').map((char, i) =>
+        char === ' '
+            ? `<span class="title-char" data-index="${i}">&nbsp;</span>`
+            : `<span class="title-char" data-index="${i}">${char}</span>`
+    ).join('');
+
+    const chars = textEl.querySelectorAll('.title-char');
+    const proximityRadius = 80; // pixels
+
+    // Store current and target values for smooth interpolation
+    const state = {
+        emoji: { scale: 1, y: 0, glow: 0 },
+        chars: Array.from(chars).map(() => ({ y: 0, glow: 0 }))
+    };
+    const targets = {
+        emoji: { scale: 1, y: 0, glow: 0 },
+        chars: Array.from(chars).map(() => ({ y: 0, glow: 0 }))
+    };
+
+    // Cache bounding rects to avoid per-mousemove getBoundingClientRect calls
+    let cachedRects = { emoji: null, chars: [] };
+    function updateCachedRects() {
+        if (emojiEl) cachedRects.emoji = emojiEl.getBoundingClientRect();
+        cachedRects.chars = Array.from(chars).map(char => char.getBoundingClientRect());
+    }
+    updateCachedRects();
+    window.addEventListener('resize', updateCachedRects);
+
+    let animating = false;
+
+    function lerp(a, b, t) {
+        return a + (b - a) * t;
+    }
+
+    function animate() {
+        const speed = 0.18;
+        let needsMore = false;
+
+        // Animate emoji
+        state.emoji.scale = lerp(state.emoji.scale, targets.emoji.scale, speed);
+        state.emoji.y = lerp(state.emoji.y, targets.emoji.y, speed);
+        state.emoji.glow = lerp(state.emoji.glow, targets.emoji.glow, speed);
+
+        if (emojiEl) {
+            emojiEl.style.transform = `scale(${state.emoji.scale}) translateY(${state.emoji.y}px)`;
+            emojiEl.style.boxShadow = state.emoji.glow > 0.01
+                ? `0 0 ${8 + state.emoji.glow * 12}px ${state.emoji.glow * 4}px rgba(255, 170, 0, ${state.emoji.glow * 0.5})`
+                : 'none';
+        }
+
+        if (Math.abs(state.emoji.scale - targets.emoji.scale) > 0.001) needsMore = true;
+
+        // Animate characters
+        chars.forEach((char, i) => {
+            state.chars[i].y = lerp(state.chars[i].y, targets.chars[i].y, speed);
+            state.chars[i].glow = lerp(state.chars[i].glow, targets.chars[i].glow, speed);
+
+            char.style.transform = `translateY(${state.chars[i].y}px)`;
+            char.style.filter = state.chars[i].glow > 0.01
+                ? `drop-shadow(0 0 ${6 + state.chars[i].glow * 14}px rgba(255, 170, 0, ${state.chars[i].glow}))`
+                : 'none';
+
+            if (Math.abs(state.chars[i].y - targets.chars[i].y) > 0.01) needsMore = true;
+            if (Math.abs(state.chars[i].glow - targets.chars[i].glow) > 0.01) needsMore = true;
+        });
+
+        if (needsMore) {
+            requestAnimationFrame(animate);
+        } else {
+            animating = false;
+        }
+    }
+
+    function startAnimate() {
+        if (!animating) {
+            animating = true;
+            requestAnimationFrame(animate);
+        }
+    }
+
+    function updateProximity(e) {
+        const mouseX = e.clientX;
+        const mouseY = e.clientY;
+
+        // Update emoji targets (use cached rect)
+        if (emojiEl && cachedRects.emoji) {
+            const emojiRect = cachedRects.emoji;
+            const emojiCenterX = emojiRect.left + emojiRect.width / 2;
+            const emojiCenterY = emojiRect.top + emojiRect.height / 2;
+            const emojiDist = Math.sqrt(
+                Math.pow(mouseX - emojiCenterX, 2) +
+                Math.pow(mouseY - emojiCenterY, 2)
+            );
+            const intensity = Math.max(0, 1 - (emojiDist / proximityRadius));
+
+            targets.emoji.scale = 1 + intensity * 0.12;
+            targets.emoji.y = -intensity * 5;
+            targets.emoji.glow = intensity;
+        }
+
+        // Update character targets (use cached rects)
+        chars.forEach((char, i) => {
+            const rect = cachedRects.chars[i];
+            if (!rect) return;
+            const charCenterX = rect.left + rect.width / 2;
+            const charCenterY = rect.top + rect.height / 2;
+            const distance = Math.sqrt(
+                Math.pow(mouseX - charCenterX, 2) +
+                Math.pow(mouseY - charCenterY, 2)
+            );
+
+            const intensity = Math.max(0, 1 - (distance / proximityRadius));
+            targets.chars[i].y = -intensity * 6;
+            targets.chars[i].glow = intensity;
+        });
+
+        startAnimate();
+    }
+
+    function resetEffects() {
+        targets.emoji.scale = 1;
+        targets.emoji.y = 0;
+        targets.emoji.glow = 0;
+
+        targets.chars.forEach(c => {
+            c.y = 0;
+            c.glow = 0;
+        });
+
+        startAnimate();
+    }
+
+    container.addEventListener('mousemove', updateProximity);
+    container.addEventListener('mouseleave', resetEffects);
 }

@@ -9,16 +9,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700;800&display=swap"
         rel="stylesheet">
-    <!-- Three.js r182 via ES6 Import Maps - enables ES module imports -->
-    <script type="importmap">
-    {
-        "imports": {
-            "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.min.js",
-            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
-            "stats.js": "https://cdn.jsdelivr.net/npm/stats.js@0.17.0/build/stats.min.js"
-        }
-    }
-    </script>
+    <!-- All JS bundled (including THREE.js) -->
     <link rel="icon" type="image/png" href="favicon.png">
     <link rel="stylesheet" href="style.css">
     <style>
@@ -479,7 +470,7 @@
         </div>
     </div>
 
-    <script type="module" src="js/main.js"></script>
+    <script src="app.js"></script>
 </body>
 
 </html>
