@@ -10,7 +10,7 @@
 > [!NOTE]
 > <sup> *designed to work best in obs or chrome* <sup>
 
-## 📺 OBS Browser Source Setup
+# 📺 OBS Browser Source Setup
 
 This overlay is designed to be used as an **OBS Browser Source**. You can also open it in Chrome to play around and design your perfect lights before streaming! Just make sure to use the export feature as setting things up in your browser will not save them to the same location that the **OBS Browser Source** will read from!
 
@@ -35,7 +35,7 @@ This overlay is designed to be used as an **OBS Browser Source**. You can also o
 
 > **Why +100px height?** The "Show UI" button lives at the bottom of the frame. The extra height keeps it accessible for you, but hidden from your viewers!
 
-### Customizing Your Lights (Interact Mode)
+# 🎁 Customizing Your Lights!
 
 Once the browser source is added, you can customize your lights while off stream or while live:
 
@@ -79,7 +79,7 @@ There are a TON of settings to play with - but don't feel overwhelmed!
 
 ---
 
-## 📴 Local/Offline Version
+# 📴 Local/Offline Version
 
 Want to use this without an internet connection? There's a local version included!
 
