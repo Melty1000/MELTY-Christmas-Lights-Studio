@@ -6,7 +6,7 @@
 ![Three.js](https://img.shields.io/badge/Three.js-r182-red)
 
 ---
-### [Click Me To Test!](https://melty1000.github.io/MELTY-Christmas-Lights-Studio/)  
+### [Open Melty's Christmas Lights Studio](https://lights.melty.lol)  
 > [!NOTE]
 > <sup> *designed to work best in obs or chrome* <sup>
 
@@ -21,7 +21,7 @@ This overlay is designed to be used as an **OBS Browser Source**. You can also o
 3. Give it a name (like "Christmas Lights" or "Holiday Magic" ✨)
 4. Set the **URL** to:
    ```
-   https://melty1000.github.io/MELTY-Christmas-Lights-Studio/
+   https://lights.melty.lol
    ```
 5. Set **Width** to your stream width (e.g., 1920)
 6. Set **Height** to your stream height **+ 100 pixels**
