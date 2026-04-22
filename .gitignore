@@ -1,0 +1,23 @@
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+*.log
+.DS_Store
+.env
+.env.local
+.env.*.local
+
+# API runtime data (persisted config, presets, bindings)
+apps/api/data/
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# OS
+Thumbs.db
+
+# Local agent settings
+.claude/settings.local.json

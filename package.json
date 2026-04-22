@@ -1,0 +1,22 @@
+{
+  "name": "melty-christmas-lights-studio",
+  "version": "2.0.0",
+  "private": true,
+  "description": "OBS overlay + control panel for Christmas lights, built on React Three Fiber with Streamer.bot integration.",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "corepack pnpm -r --parallel --filter @melty/web --filter @melty/api run dev",
+    "dev:web": "corepack pnpm --filter @melty/web run dev",
+    "dev:api": "corepack pnpm --filter @melty/api run dev",
+    "build": "corepack pnpm -r --filter @melty/web --filter @melty/api run build",
+    "typecheck": "corepack pnpm -r run typecheck",
+    "lint": "corepack pnpm -r run lint",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7"
+  }
+}

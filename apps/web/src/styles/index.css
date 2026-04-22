@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --sidebar-width: 64px;
+
+    --melt-void: #050505;
+    --melt-frame: #0c0c0e;
+    --melt-surface: #18181b;
+    --melt-panel: rgba(12, 12, 14, 0.62);
+    --melt-panel-alt: rgba(24, 24, 27, 0.48);
+
+    --melt-accent: #f2af0d;
+    --melt-accent-hover: #ffc130;
+    --melt-accent-glow: rgba(242, 175, 13, 0.3);
+
+    --melt-text-heading: #e4e4e7;
+    --melt-text-body: #d4d4d4;
+    --melt-text-label: #a1a1aa;
+    --melt-text-dim: #a1a1aa;
+    --melt-text-muted: #71717a;
+
+    --color-accent: var(--melt-accent);
+    --color-accent-muted: color-mix(in srgb, var(--melt-accent) 58%, #000 42%);
+    --color-surface-0: var(--melt-void);
+    --color-surface-1: var(--melt-frame);
+    --color-surface-2: var(--melt-surface);
+    --color-surface-3: color-mix(in srgb, var(--melt-surface) 82%, #fff 18%);
+    --color-border-subtle: color-mix(in srgb, var(--melt-text-muted) 18%, transparent);
+    --color-text-dim: var(--melt-text-dim);
+  }
+
+  [data-theme='graphite-cobalt'] {
+    --melt-accent: #1d4267;
+    --melt-accent-hover: #355c85;
+    --melt-accent-glow: rgba(29, 66, 103, 0.36);
+  }
+
+  [data-theme='slate-gold'] {
+    --melt-void: #08090a;
+    --melt-frame: #0e1115;
+    --melt-surface: #1c1f26;
+    --melt-accent: #f2af0d;
+    --melt-accent-hover: #ffc130;
+    --melt-accent-glow: rgba(242, 175, 13, 0.34);
+  }
+
+  [data-theme='slate-cobalt'] {
+    --melt-void: #08090a;
+    --melt-frame: #0e1115;
+    --melt-surface: #1c1f26;
+    --melt-accent: #1d4267;
+    --melt-accent-hover: #355c85;
+    --melt-accent-glow: rgba(29, 66, 103, 0.36);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--melt-void);
+    color: var(--melt-text-body);
+    font-family: "Aptos", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  * {
+    scrollbar-color: var(--melt-text-muted) var(--melt-surface);
+  }
+
+  select,
+  input,
+  button,
+  textarea {
+    color: inherit;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--melt-accent) 32%, transparent);
+    color: var(--melt-text-heading);
+  }
+}
+
+@theme inline {
+  --color-melt-void: var(--melt-void);
+  --color-melt-frame: var(--melt-frame);
+  --color-melt-surface: var(--melt-surface);
+  --color-melt-panel: var(--melt-panel);
+  --color-melt-panel-alt: var(--melt-panel-alt);
+  --color-melt-accent: var(--melt-accent);
+  --color-melt-accent-hover: var(--melt-accent-hover);
+  --color-melt-accent-glow: var(--melt-accent-glow);
+  --color-melt-text-heading: var(--melt-text-heading);
+  --color-melt-text-body: var(--melt-text-body);
+  --color-melt-text-label: var(--melt-text-label);
+  --color-melt-text-dim: var(--melt-text-dim);
+  --color-melt-text-muted: var(--melt-text-muted);
+}
+
+@layer utilities {
+  .text-label-xs {
+    font-size: 10px;
+    line-height: 1rem;
+    font-weight: 900;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  .text-label-2xs {
+    font-size: 8px;
+    line-height: 1rem;
+    font-weight: 900;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .text-label-sm {
+    font-size: 11px;
+    line-height: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .shadow-glow {
+    box-shadow: 0 0 20px var(--melt-accent-glow);
+  }
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--melt-surface);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--melt-text-muted);
+  border: 3px solid var(--melt-surface);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--melt-text-label);
+}
+
+/* Overlay route: fully transparent for OBS */
+.overlay-canvas-root {
+  background: transparent !important;
+}
+
+body.overlay-mode {
+  background: transparent !important;
+}
