@@ -14,8 +14,8 @@ import {
   ShapeGeometry,
   Vector3,
 } from 'three';
-import type { Config } from '@melty/shared';
 import { createBulbAnimationState, stepBulbAnimation, type BulbAnimationState } from './animation.ts';
+import { useConfigStore } from '~/stores/useConfigStore.ts';
 import { getBulbPalette } from './utils.ts';
 
 export interface BillboardBulbDatum {
@@ -26,8 +26,13 @@ export interface BillboardBulbDatum {
 
 interface BillboardBulbsProps {
   bulbs: BillboardBulbDatum[];
-  config: Config;
   themePalette: number[];
+  // POINT_LIGHTS_ENABLED is structural — it decides whether the pointLight
+  // subtree is mounted at all. All other config values (BULB_SCALE,
+  // GLASS_OPACITY, EMISSIVE_INTENSITY, AMBIENT_INTENSITY, animation params)
+  // are read imperatively each frame via useConfigStore.getState() so that
+  // dragging those sliders doesn't cause any React reconciliation here.
+  pointLightsEnabled: boolean;
 }
 
 interface BillboardGeometries {
@@ -92,7 +97,7 @@ const BILLBOARD_OFFSETS = {
   socket: { y: -1.75, z: 0.06 } satisfies BillboardInstanceOffset,
 } as const;
 
-export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsProps) {
+export function BillboardBulbs({ bulbs, themePalette, pointLightsEnabled }: BillboardBulbsProps) {
   const glassRef = useRef<InstancedMesh>(null);
   const filamentRef = useRef<InstancedMesh>(null);
   const socketRef = useRef<InstancedMesh>(null);
@@ -103,9 +108,7 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
   const filamentMaterial = useMemo(createFilamentMaterial, []);
   const socketMaterial = useMemo(createSocketMaterial, []);
 
-  const pointLightCount = config.POINT_LIGHTS_ENABLED
-    ? Math.min(bulbs.length, MAX_POINT_LIGHTS)
-    : 0;
+  const pointLightCount = pointLightsEnabled ? Math.min(bulbs.length, MAX_POINT_LIGHTS) : 0;
 
   useEffect(() => {
     animationStatesRef.current = bulbs.map((_, index) => animationStatesRef.current[index] ?? createBulbAnimationState(index));
@@ -141,6 +144,12 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
     const filament = filamentRef.current;
     const socket = socketRef.current;
     if (!glass || !filament || !socket) return;
+
+    // Pull the live config every frame. Zero React overhead — this is just
+    // a ref read, so every continuous slider (bulb scale, emissive, glass
+    // opacity, ambient, animation speeds/styles) updates on the next GL
+    // frame without re-rendering the scene graph.
+    const config = useConfigStore.getState().config;
 
     const glassColorAttr = glass.geometry.getAttribute('instanceColor') as
       | InstancedBufferAttribute
@@ -289,32 +298,49 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
       <instancedMesh ref={socketRef} args={[geometries.socket, socketMaterial, bulbs.length]} renderOrder={0} />
       <instancedMesh ref={glassRef} args={[geometries.glass, glassMaterial, bulbs.length]} renderOrder={10} />
       <instancedMesh ref={filamentRef} args={[geometries.filament, filamentMaterial, bulbs.length]} renderOrder={11} />
-      {pointLightCount > 0
-        ? bulbs.slice(0, pointLightCount).map((bulb, index) => (
-            <pointLight
-              key={`pl-${index}`}
-              ref={(light) => {
-                pointLightRefs.current[index] = light;
-              }}
-              // Initial position gets overwritten every frame in useFrame to
-              // track BULB_SCALE, but we seed it above the attachment point
-              // so the very first frame doesn't render the light sunk into
-              // the wire.
-              position={[
-                bulb.position[0],
-                bulb.position[1] + POINT_LIGHT_VERTICAL_OFFSET * config.BULB_SCALE,
-                bulb.position[2],
-              ]}
-              distance={POINT_LIGHT_DISTANCE}
-              decay={POINT_LIGHT_DECAY}
-              intensity={0}
-              color={bulb.baseColorHex}
-            />
-          ))
-        : null}
+      {pointLightCount > 0 ? <PointLightStrand bulbs={bulbs} pointLightCount={pointLightCount} pointLightRefs={pointLightRefs} /> : null}
     </group>
   );
 }
+
+// Point-light strand is extracted so it can be memoized on just `bulbs` and
+// `pointLightCount`. BillboardBulbs itself rerenders only when structural
+// fields change (which is rare), so in practice this memo mostly guards
+// against strand count / bulb-array changes rather than continuous sliders.
+const PointLightStrand = ({
+  bulbs,
+  pointLightCount,
+  pointLightRefs,
+}: {
+  bulbs: BillboardBulbDatum[];
+  pointLightCount: number;
+  pointLightRefs: React.MutableRefObject<Array<PointLight | null>>;
+}) => {
+  // Seed Y with current BULB_SCALE so the very first frame (before useFrame
+  // runs) doesn't render the lights sunk into the wire.
+  const initialScale = useConfigStore.getState().config.BULB_SCALE;
+  return (
+    <>
+      {bulbs.slice(0, pointLightCount).map((bulb, index) => (
+        <pointLight
+          key={`pl-${index}`}
+          ref={(light) => {
+            pointLightRefs.current[index] = light;
+          }}
+          position={[
+            bulb.position[0],
+            bulb.position[1] + POINT_LIGHT_VERTICAL_OFFSET * initialScale,
+            bulb.position[2],
+          ]}
+          distance={POINT_LIGHT_DISTANCE}
+          decay={POINT_LIGHT_DECAY}
+          intensity={0}
+          color={bulb.baseColorHex}
+        />
+      ))}
+    </>
+  );
+};
 
 function writeInstance(
   mesh: InstancedMesh,

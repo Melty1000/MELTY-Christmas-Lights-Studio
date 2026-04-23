@@ -3,16 +3,25 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Bloom, EffectComposer, ToneMapping } from '@react-three/postprocessing';
 import { ToneMappingMode } from 'postprocessing';
 import { useEffect, useMemo, useRef } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import {
   ACESFilmicToneMapping,
+  type AmbientLight,
   CatmullRomCurve3,
-  DoubleSide,
+  type DirectionalLight,
   Group,
   HalfFloatType,
-  Mesh,
+  type HemisphereLight,
+  type Mesh,
   NoToneMapping,
+  type ShaderMaterial,
   Vector3,
 } from 'three';
+import {
+  BloomEffect,
+  EffectPass,
+  type EffectComposer as EffectComposerImpl,
+} from 'postprocessing';
 import { SOCKET_THEMES, THEMES, WIRE_THEMES, type Config } from '@melty/shared';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 import { BillboardBulbs } from './BillboardBulbs.tsx';
@@ -20,50 +29,143 @@ import { SnowField } from './SnowField.tsx';
 import { bulbTLocations } from './utils.ts';
 import { generateBasePoints } from './wire/basePoints.ts';
 import { allocateRibbonBuffers, writeRibbonPositions } from './wire/buildRibbonGeometry.ts';
-import { segmentCountForQuality } from './wire/buildTubeGeometry.ts';
+import { ribbonSegmentCount } from './wire/buildTubeGeometry.ts';
+import { createWireMaterial } from './wire/createWireMaterial.ts';
 import { TwistedCurve } from './wire/TwistedCurve.ts';
 import { AlphaLift } from './effects/AlphaLift.tsx';
 
 const BACKGROUND_COLOR = '#08111d';
 
+// ---------------------------------------------------------------------------
+// Structural vs. continuous config
+// ---------------------------------------------------------------------------
+//
+// Before this split, `Scene` subscribed to the whole config object. Every
+// slider tick produced a new config reference, which re-rendered Scene →
+// Canvas → every child under R3F, including the 80-item pointLight list in
+// BillboardBulbs. That's the reason dragging BULB_SCALE / EMISSIVE /
+// AMBIENT / CAMERA_* felt heavy: React was reconciling an entire 3D scene
+// graph per pixel of drag.
+//
+// The fix is to subscribe only to *structural* fields — the ones that
+// change mount/unmount, geometry topology, theme lookups, or feature
+// toggles. Everything else (continuous intensities, camera position, sway,
+// bloom params, bulb scale, glass opacity) is read imperatively in
+// useFrame via `useConfigStore.getState()`, so dragging those sliders just
+// updates the next GL frame without any React work.
+interface StructuralConfig {
+  NUM_PINS: number;
+  LIGHTS_PER_SEGMENT: number;
+  SAG_AMPLITUDE: number;
+  TENSION: number;
+  WIRE_SEPARATION: number;
+  WIRE_TWISTS: number;
+  WIRE_THEME: Config['WIRE_THEME'];
+  SOCKET_THEME: Config['SOCKET_THEME'];
+  ACTIVE_THEME: Config['ACTIVE_THEME'];
+  BULB_SCALE: number;
+  POINT_LIGHTS_ENABLED: boolean;
+  POSTFX_ENABLED: boolean;
+  BACKGROUND_ENABLED: boolean;
+  ANTIALIAS_ENABLED: boolean;
+  STATS_ENABLED: boolean;
+  STARS_ENABLED: boolean;
+  STARS_COUNT: number;
+  STARS_SIZE: number;
+  STARS_TWINKLE_SPEED: number;
+  SNOW_ENABLED: boolean;
+  SNOW_COUNT: number;
+  SNOW_SPEED: number;
+  SNOW_SIZE: number;
+  SNOW_DRIFT: number;
+}
+
+function selectStructural(state: { config: Config }): StructuralConfig {
+  const c = state.config;
+  return {
+    NUM_PINS: c.NUM_PINS,
+    LIGHTS_PER_SEGMENT: c.LIGHTS_PER_SEGMENT,
+    SAG_AMPLITUDE: c.SAG_AMPLITUDE,
+    TENSION: c.TENSION,
+    WIRE_SEPARATION: c.WIRE_SEPARATION,
+    WIRE_TWISTS: c.WIRE_TWISTS,
+    WIRE_THEME: c.WIRE_THEME,
+    SOCKET_THEME: c.SOCKET_THEME,
+    ACTIVE_THEME: c.ACTIVE_THEME,
+    BULB_SCALE: c.BULB_SCALE,
+    POINT_LIGHTS_ENABLED: c.POINT_LIGHTS_ENABLED,
+    POSTFX_ENABLED: c.POSTFX_ENABLED,
+    BACKGROUND_ENABLED: c.BACKGROUND_ENABLED,
+    ANTIALIAS_ENABLED: c.ANTIALIAS_ENABLED,
+    STATS_ENABLED: c.STATS_ENABLED,
+    STARS_ENABLED: c.STARS_ENABLED,
+    STARS_COUNT: c.STARS_COUNT,
+    STARS_SIZE: c.STARS_SIZE,
+    STARS_TWINKLE_SPEED: c.STARS_TWINKLE_SPEED,
+    SNOW_ENABLED: c.SNOW_ENABLED,
+    SNOW_COUNT: c.SNOW_COUNT,
+    SNOW_SPEED: c.SNOW_SPEED,
+    SNOW_SIZE: c.SNOW_SIZE,
+    SNOW_DRIFT: c.SNOW_DRIFT,
+  };
+}
+
 export function Scene() {
-  const config = useConfigStore((state) => state.config);
+  // `useShallow` returns the same object ref when every field is ===, so
+  // Scene only re-renders when a *structural* field actually changes.
+  // Dragging BULB_SCALE, AMBIENT_INTENSITY, CAMERA_*, BLOOM_*, SWAY_*, etc.
+  // does NOT land here.
+  const structural = useConfigStore(useShallow(selectStructural));
 
   return (
     <Canvas
-      key={`scene-${config.ANTIALIAS_ENABLED ? 'aa' : 'noaa'}-${config.QUALITY}`}
+      key={`scene-${structural.ANTIALIAS_ENABLED ? 'aa' : 'noaa'}`}
       camera={{
         far: 200,
         fov: 40,
         near: 0.1,
-        position: [config.CAMERA_X, config.CAMERA_HEIGHT, config.CAMERA_DISTANCE],
+        // Seed position only — CameraPose takes over on mount and updates
+        // the camera imperatively every frame, so changing CAMERA_* no
+        // longer causes React to re-render this tree.
+        position: [0, 1.8, 15],
       }}
       dpr={[1, 2]}
       gl={{
         alpha: true,
-        antialias: config.ANTIALIAS_ENABLED,
+        antialias: structural.ANTIALIAS_ENABLED,
         premultipliedAlpha: false,
       }}
       onCreated={({ gl }) => {
         gl.setClearColor(0x000000, 0);
-        // When PostFX is active, the composer does tone mapping via the
-        // dedicated ToneMapping pass so we keep the base renderer in linear
-        // space (NoToneMapping) to avoid double-mapping the HDR values that
-        // feed into Bloom. The renderer's own tone mapping is only used when
-        // PostFX is disabled, so we flip this in SceneContent as needed.
         gl.toneMapping = NoToneMapping;
         gl.toneMappingExposure = 1.2;
       }}
     >
-      <SceneContent config={config} />
+      <SceneContent structural={structural} />
     </Canvas>
   );
 }
 
-function SceneContent({ config }: { config: Config }) {
-  const activeTheme = THEMES[config.ACTIVE_THEME];
-  const wireTheme = WIRE_THEMES[config.WIRE_THEME];
+function SceneContent({ structural }: { structural: StructuralConfig }) {
+  const activeTheme = THEMES[structural.ACTIVE_THEME];
+  const wireTheme = WIRE_THEMES[structural.WIRE_THEME];
   const swayGroupRef = useRef<Group>(null);
+  const ambientRef = useRef<AmbientLight>(null);
+  const keyLightRef = useRef<DirectionalLight>(null);
+  const fillLightRef = useRef<DirectionalLight>(null);
+  const hemiLightRef = useRef<HemisphereLight>(null);
+  // We reach the BloomEffect through the EffectComposer ref rather than a
+  // direct ref on <Bloom>. `@react-three/postprocessing`'s `wrapEffect`
+  // uses `JSON.stringify(props)` as a useMemo dep (util.tsx:34), and in
+  // React 19 `ref` is now a regular prop. A ref on <Bloom> ends up in the
+  // stringified props, which then walks into the Three.js parent/children
+  // cycle on the resolved BloomEffect and throws "Converting circular
+  // structure to JSON". <EffectComposer> DOES use forwardRef so this path
+  // is safe, and we find the Bloom pass by walking composer.passes each
+  // frame — cheap and lets us tune intensity/threshold imperatively with
+  // zero React work on slider drag.
+  const composerRef = useRef<EffectComposerImpl>(null);
+  const bloomEffectRef = useRef<BloomEffect | null>(null);
   const { gl } = useThree();
 
   // Keep renderer tone mapping in sync with the PostFX toggle. With PostFX on,
@@ -72,13 +174,13 @@ function SceneContent({ config }: { config: Config }) {
   // twice (which collapsed the scene to near-black whenever the opaque
   // background was off). With PostFX off, the renderer itself handles it.
   useEffect(() => {
-    gl.toneMapping = config.POSTFX_ENABLED ? NoToneMapping : ACESFilmicToneMapping;
+    gl.toneMapping = structural.POSTFX_ENABLED ? NoToneMapping : ACESFilmicToneMapping;
     gl.toneMappingExposure = 1.2;
-  }, [gl, config.POSTFX_ENABLED]);
+  }, [gl, structural.POSTFX_ENABLED]);
 
   const basePoints = useMemo(
-    () => generateBasePoints(config.NUM_PINS, config.SAG_AMPLITUDE, config.TENSION),
-    [config.NUM_PINS, config.SAG_AMPLITUDE, config.TENSION],
+    () => generateBasePoints(structural.NUM_PINS, structural.SAG_AMPLITUDE, structural.TENSION),
+    [structural.NUM_PINS, structural.SAG_AMPLITUDE, structural.TENSION],
   );
 
   const baseCurve = useMemo(
@@ -87,8 +189,8 @@ function SceneContent({ config }: { config: Config }) {
   );
 
   const locations = useMemo(
-    () => bulbTLocations(config.NUM_PINS, config.LIGHTS_PER_SEGMENT),
-    [config.NUM_PINS, config.LIGHTS_PER_SEGMENT],
+    () => bulbTLocations(structural.NUM_PINS, structural.LIGHTS_PER_SEGMENT),
+    [structural.NUM_PINS, structural.LIGHTS_PER_SEGMENT],
   );
 
   const evenLocations = useMemo(
@@ -104,19 +206,19 @@ function SceneContent({ config }: { config: Config }) {
   const wireA = useMemo(
     () => new TwistedCurve(
       baseCurve,
-      config.WIRE_SEPARATION,
-      config.WIRE_TWISTS,
+      structural.WIRE_SEPARATION,
+      structural.WIRE_TWISTS,
       0,
       evenLocations,
       oddLocations,
-      config.BULB_SCALE,
+      structural.BULB_SCALE,
       true,
     ),
     [
       baseCurve,
-      config.BULB_SCALE,
-      config.WIRE_SEPARATION,
-      config.WIRE_TWISTS,
+      structural.BULB_SCALE,
+      structural.WIRE_SEPARATION,
+      structural.WIRE_TWISTS,
       evenLocations,
       oddLocations,
     ],
@@ -125,19 +227,19 @@ function SceneContent({ config }: { config: Config }) {
   const wireB = useMemo(
     () => new TwistedCurve(
       baseCurve,
-      config.WIRE_SEPARATION,
-      config.WIRE_TWISTS,
+      structural.WIRE_SEPARATION,
+      structural.WIRE_TWISTS,
       Math.PI,
       oddLocations,
       evenLocations,
-      config.BULB_SCALE,
+      structural.BULB_SCALE,
       true,
     ),
     [
       baseCurve,
-      config.BULB_SCALE,
-      config.WIRE_SEPARATION,
-      config.WIRE_TWISTS,
+      structural.BULB_SCALE,
+      structural.WIRE_SEPARATION,
+      structural.WIRE_TWISTS,
       evenLocations,
       oddLocations,
     ],
@@ -146,9 +248,9 @@ function SceneContent({ config }: { config: Config }) {
   const bulbData = useMemo(() => (
     locations.map((t, index) => {
       const point = baseCurve.getPoint(t);
-      const socketColorHex = config.SOCKET_THEME === 'WIRE_MATCH'
+      const socketColorHex = structural.SOCKET_THEME === 'WIRE_MATCH'
         ? (index % 2 === 0 ? wireTheme.A : wireTheme.B)
-        : (SOCKET_THEMES[config.SOCKET_THEME] ?? wireTheme.A);
+        : (SOCKET_THEMES[structural.SOCKET_THEME] ?? wireTheme.A);
 
       return {
         baseColorHex: activeTheme.bulbs[index % activeTheme.bulbs.length]!,
@@ -156,108 +258,139 @@ function SceneContent({ config }: { config: Config }) {
         socketColorHex,
       };
     })
-  ), [activeTheme.bulbs, baseCurve, config.SOCKET_THEME, locations, wireTheme.A, wireTheme.B]);
+  ), [activeTheme.bulbs, baseCurve, structural.SOCKET_THEME, locations, wireTheme.A, wireTheme.B]);
 
-  const segmentCount = segmentCountForQuality(config.QUALITY, config.WIRE_TWISTS);
+  const segmentCount = ribbonSegmentCount(structural.WIRE_TWISTS);
 
+  // Imperative per-frame updater for every continuous slider we no longer
+  // subscribe to. Reading `useConfigStore.getState()` is zero-cost and
+  // returns the current state synchronously, so sliders controlling these
+  // values never trigger a React render — the next GL frame just picks up
+  // the new number.
   useFrame(({ clock }) => {
-    const group = swayGroupRef.current;
-    if (!group) return;
+    const c = useConfigStore.getState().config;
 
-    const elapsed = clock.getElapsedTime();
-    group.position.x = Math.sin(elapsed * 0.65) * config.SWAY_X * 0.18;
-    group.position.z = Math.cos(elapsed * 0.45) * config.SWAY_Z * 0.16;
+    const group = swayGroupRef.current;
+    if (group) {
+      const elapsed = clock.getElapsedTime();
+      group.position.x = Math.sin(elapsed * 0.65) * c.SWAY_X * 0.18;
+      group.position.z = Math.cos(elapsed * 0.45) * c.SWAY_Z * 0.16;
+    }
+
+    if (ambientRef.current) ambientRef.current.intensity = c.AMBIENT_INTENSITY;
+    if (keyLightRef.current) keyLightRef.current.intensity = c.KEY_LIGHT_INTENSITY;
+    if (fillLightRef.current) fillLightRef.current.intensity = c.FILL_LIGHT_INTENSITY;
+    if (hemiLightRef.current) hemiLightRef.current.intensity = c.HEMI_LIGHT_INTENSITY;
+
+    // Bloom live-tune. We cache the BloomEffect instance the first time we
+    // see it by walking composer.passes[].effects. Writing to the instance
+    // directly avoids a React re-render on every BLOOM_* drag AND avoids
+    // the wrapEffect JSON.stringify(props) hazard that Bloom props would
+    // trigger on any prop change.
+    let bloom = bloomEffectRef.current;
+    if (!bloom) {
+      const composer = composerRef.current;
+      if (composer) {
+        for (const pass of composer.passes) {
+          if (pass instanceof EffectPass) {
+            // EffectPass keeps its effects in a private-ish `effects` array
+            // that's been on the public class since postprocessing 6.x.
+            const effects = (pass as unknown as { effects: readonly unknown[] }).effects;
+            if (effects) {
+              for (const eff of effects) {
+                if (eff instanceof BloomEffect) {
+                  bloom = eff;
+                  bloomEffectRef.current = eff;
+                  break;
+                }
+              }
+            }
+          }
+          if (bloom) break;
+        }
+      }
+    }
+    if (bloom) {
+      bloom.intensity = c.BLOOM_STRENGTH * Math.max(0.35, c.BLOOM_INTENSITY);
+      const lum = bloom.luminanceMaterial;
+      if (lum?.uniforms?.threshold) {
+        lum.uniforms.threshold.value = c.BLOOM_THRESHOLD;
+      }
+    }
   });
 
   return (
     <>
-      {config.BACKGROUND_ENABLED ? <color attach="background" args={[BACKGROUND_COLOR]} /> : null}
-      <CameraPose config={config} />
+      {structural.BACKGROUND_ENABLED ? (
+        <color attach="background" args={[BACKGROUND_COLOR]} />
+      ) : null}
+      <CameraPose />
 
-      <ambientLight intensity={config.AMBIENT_INTENSITY} />
-      <directionalLight intensity={config.KEY_LIGHT_INTENSITY} position={[0, 12, 12]} />
-      <directionalLight intensity={config.FILL_LIGHT_INTENSITY} position={[0, 4, -12]} />
-      <hemisphereLight args={['#eef5ff', '#0a0a12', config.HEMI_LIGHT_INTENSITY]} />
+      <ambientLight ref={ambientRef} intensity={0} />
+      <directionalLight ref={keyLightRef} intensity={0} position={[0, 12, 12]} />
+      <directionalLight ref={fillLightRef} intensity={0} position={[0, 4, -12]} />
+      <hemisphereLight ref={hemiLightRef} args={['#eef5ff', '#0a0a12', 0]} />
 
-      {config.STARS_ENABLED ? (
+      {structural.STARS_ENABLED ? (
         <Stars
-          count={config.STARS_COUNT}
+          count={structural.STARS_COUNT}
           depth={22}
           fade
-          factor={Math.max(0.3, config.STARS_SIZE * 5)}
+          factor={Math.max(0.3, structural.STARS_SIZE * 5)}
           radius={38}
           saturation={0}
-          speed={config.STARS_TWINKLE_SPEED}
+          speed={structural.STARS_TWINKLE_SPEED}
         />
       ) : null}
 
-      {config.SNOW_ENABLED ? (
+      {structural.SNOW_ENABLED ? (
         <SnowField
-          count={config.SNOW_COUNT}
-          speed={config.SNOW_SPEED}
-          size={config.SNOW_SIZE}
-          drift={config.SNOW_DRIFT}
+          count={structural.SNOW_COUNT}
+          speed={structural.SNOW_SPEED}
+          size={structural.SNOW_SIZE}
+          drift={structural.SNOW_DRIFT}
         />
       ) : null}
 
-      {/* Previously this was wrapped in <Selection>/<Select> + <SelectiveBloom>
-          to isolate the bulb emissives from the wire. That setup sent the
-          drei Selection context into an infinite "Maximum update depth"
-          loop once the scene mounted (80+ <pointLight> children under
-          <Select> caused Selection to re-register selected objects every
-          render), which spammed the console hard enough to freeze the
-          browser / the whole machine.
-
-          The simpler legacy-style approach — one <Bloom> pass with a
-          luminance threshold — works here because the bulb shader is
-          emissive (vColor * baseEmissiveIntensity, ≥6) so bulbs always
-          sail over any sensible threshold, while the wire/sockets stay
-          below it under normal lighting. */}
+      {/* Single luminance-threshold Bloom pass does the emissive halo work
+          that a <SelectiveBloom> + <Selection> + 80 <pointLight>s would have
+          done, without the "Maximum update depth" render loop that older
+          combo caused. */}
       <group ref={swayGroupRef}>
+        {/* Strand A and B are π out of phase, so the weave depth offset in
+            the shader pushes them in opposite directions every half-twist
+            and they actually cross over each other in screen space
+            (instead of just alpha-overlapping as two flat ribbons). */}
         <WireRibbon
           color={wireTheme.A}
           curve={wireA}
           segments={segmentCount}
-          thickness={config.WIRE_THICKNESS}
+          twistPhase={0}
+          strandId={0}
         />
         <WireRibbon
           color={wireTheme.B}
           curve={wireB}
           segments={segmentCount}
-          thickness={config.WIRE_THICKNESS}
+          twistPhase={Math.PI}
+          strandId={1}
         />
-        <BillboardBulbs bulbs={bulbData} config={config} themePalette={activeTheme.bulbs} />
+        <BillboardBulbs
+          bulbs={bulbData}
+          themePalette={activeTheme.bulbs}
+          pointLightsEnabled={structural.POINT_LIGHTS_ENABLED}
+        />
       </group>
 
-      {config.POSTFX_ENABLED ? (
-        <EffectComposer
-          multisampling={config.ANTIALIAS_ENABLED ? 8 : 0}
-          frameBufferType={HalfFloatType}
-        >
-          <Bloom
-            luminanceThreshold={config.BLOOM_THRESHOLD}
-            mipmapBlur
-            intensity={config.BLOOM_STRENGTH * Math.max(0.35, config.BLOOM_INTENSITY)}
-            radius={config.BLOOM_RADIUS}
-          />
-          {/*
-            AGX tone mapping preserves hue at high intensity — ACES Filmic
-            was collapsing saturated emissive bulbs (vColor * 6+) toward
-            white and spreading that white through bloom.
-          */}
-          <ToneMapping mode={ToneMappingMode.AGX} />
-          {/*
-            AlphaLift stays permanently mounted and we control it with
-            `strength` instead of conditional mounting. EffectComposer walks
-            its children to build the pass chain; a null/fragment child
-            causes it to retry the build every frame and throw, which is
-            what froze the browser in the previous iteration.
-          */}
-          <AlphaLift strength={config.BACKGROUND_ENABLED ? 0 : 1} />
-        </EffectComposer>
+      {structural.POSTFX_ENABLED ? (
+        <PostFX
+          antialiased={structural.ANTIALIAS_ENABLED}
+          backgroundEnabled={structural.BACKGROUND_ENABLED}
+          composerRef={composerRef}
+        />
       ) : null}
 
-      {config.STATS_ENABLED ? <Stats className="!left-4 !top-4" /> : null}
+      {structural.STATS_ENABLED ? <Stats className="!left-4 !top-4" /> : null}
     </>
   );
 }
@@ -271,43 +404,102 @@ function SceneContent({ config }: { config: Config }) {
 const CAMERA_FORWARD = new Vector3(0, 4.8, -15).normalize();
 const _cameraTarget = new Vector3();
 
-function CameraPose({ config }: { config: Config }) {
+function CameraPose() {
   const { camera } = useThree();
 
-  useEffect(() => {
-    camera.position.set(config.CAMERA_X, config.CAMERA_HEIGHT, config.CAMERA_DISTANCE);
+  // Update the camera imperatively every frame from the store. This makes
+  // camera sliders zero-cost from a React standpoint: no re-render, no
+  // reconciliation, just a matrix update on the next GL frame.
+  useFrame(() => {
+    const c = useConfigStore.getState().config;
+    camera.position.set(c.CAMERA_X, c.CAMERA_HEIGHT, c.CAMERA_DISTANCE);
     _cameraTarget.copy(camera.position).addScaledVector(CAMERA_FORWARD, 10);
     camera.lookAt(_cameraTarget);
-    camera.updateProjectionMatrix();
-  }, [
-    camera,
-    config.CAMERA_DISTANCE,
-    config.CAMERA_HEIGHT,
-    config.CAMERA_X,
-  ]);
+  });
 
   return null;
+}
+
+// EffectComposer MUST receive effect children directly (Bloom, ToneMapping,
+// wrapEffect wrappers). Wrapping <Bloom> in a React component made the
+// composer's change-detection JSON.stringify walk into a circular Three.js
+// `parent/children` structure and throw "Converting circular structure to
+// JSON" at @react-three/postprocessing util.tsx:34. PostFX keeps everything
+// flat.
+//
+// Two important constraints this component encodes:
+//   1. We attach a ref to `<EffectComposer>` (which uses forwardRef and is
+//      therefore safe). We do NOT attach a ref to `<Bloom>` — its wrapper
+//      passes the whole props object to JSON.stringify every render, and a
+//      React ref would end up inside there and walk into Three.js circular
+//      refs.
+//   2. Bloom props are kept stable and primitive. Changing any Bloom prop
+//      rebuilds the BloomEffect instance (since the wrapper's useMemo key
+//      is JSON.stringify(props) and it flows through to `args`). So we
+//      update intensity/threshold imperatively in SceneContent's useFrame
+//      via the composer-pass walk, and only BLOOM_RADIUS is React-driven
+//      (radius changes the underlying kernel, which requires a rebuild —
+//      no clean live-resize exposed — and users rarely touch it).
+function PostFX({
+  antialiased,
+  backgroundEnabled,
+  composerRef,
+}: {
+  antialiased: boolean;
+  backgroundEnabled: boolean;
+  composerRef: React.RefObject<EffectComposerImpl | null>;
+}) {
+  const bloomRadius = useConfigStore((s) => s.config.BLOOM_RADIUS);
+  return (
+    <EffectComposer
+      ref={composerRef}
+      multisampling={antialiased ? 8 : 0}
+      frameBufferType={HalfFloatType}
+    >
+      <Bloom
+        luminanceThreshold={0.6}
+        mipmapBlur
+        intensity={1}
+        radius={bloomRadius}
+      />
+      {/* AGX preserves hue at high intensity — ACES Filmic was collapsing
+          saturated emissive bulbs toward white and spreading white through
+          bloom. */}
+      <ToneMapping mode={ToneMappingMode.AGX} />
+      {/* AlphaLift stays mounted and we control it with `strength` instead
+          of conditional mounting, so EffectComposer's child list stays
+          stable. */}
+      <AlphaLift strength={backgroundEnabled ? 0 : 1} />
+    </EffectComposer>
+  );
 }
 
 function WireRibbon({
   color,
   curve,
   segments,
-  thickness,
+  twistPhase,
+  strandId,
 }: {
   color: number;
   curve: TwistedCurve;
   segments: number;
-  thickness: number;
+  twistPhase: number;
+  strandId: 0 | 1;
 }) {
   const meshRef = useRef<Mesh>(null);
-  const colorValue = `#${color.toString(16).padStart(6, '0')}`;
-
   const buffers = useMemo(() => allocateRibbonBuffers(segments), [segments]);
+  const material = useMemo<ShaderMaterial>(
+    () => createWireMaterial(color, twistPhase, strandId),
+    [color, twistPhase, strandId],
+  );
 
+  // Positions + tangents are camera-independent — only the shader's
+  // extrusion depends on the view. Rewriting them once per curve change is
+  // enough; no more per-frame CPU work on these buffers.
   useEffect(() => {
-    writeRibbonPositions(buffers, curve, thickness);
-  }, [buffers, curve, thickness]);
+    writeRibbonPositions(buffers, curve);
+  }, [buffers, curve]);
 
   useEffect(() => {
     const geometry = buffers.geometry;
@@ -316,16 +508,28 @@ function WireRibbon({
     };
   }, [buffers]);
 
-  return (
-    <mesh ref={meshRef} geometry={buffers.geometry} renderOrder={1}>
-      <meshStandardMaterial
-        color={colorValue}
-        metalness={0.22}
-        roughness={0.62}
-        side={DoubleSide}
-        transparent
-        opacity={0.92}
-      />
-    </mesh>
-  );
+  useEffect(() => {
+    return () => {
+      material.dispose();
+    };
+  }, [material]);
+
+  // Imperative per-frame uniform sync. Every value we read here is either
+  // continuous (WIRE_THICKNESS, AMBIENT_INTENSITY) or cheap to rewrite
+  // every frame (uTwists). Doing this in useFrame instead of via React
+  // props means dragging the wire sliders is zero-React-work.
+  useFrame(() => {
+    const c = useConfigStore.getState().config;
+    const u = material.uniforms;
+    if (u.uTwists) u.uTwists.value = c.WIRE_TWISTS;
+    if (u.uAmbient) u.uAmbient.value = c.AMBIENT_INTENSITY;
+    if (u.uThickness) u.uThickness.value = c.WIRE_THICKNESS;
+    // Stronger physical separation at crossings when the cord is thick; keep
+    // a floor so thin settings still break z-fights between the two strands.
+    if (u.uWeaveDepth) {
+      u.uWeaveDepth.value = Math.max(0.055, c.WIRE_THICKNESS * 2.25);
+    }
+  });
+
+  return <mesh ref={meshRef} geometry={buffers.geometry} material={material} renderOrder={1} />;
 }

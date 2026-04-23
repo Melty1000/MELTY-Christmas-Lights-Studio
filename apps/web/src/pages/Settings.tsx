@@ -8,7 +8,6 @@ import {
   SectionGrid,
   SelectField,
   StatusPill,
-  ToggleField,
 } from '~/components/controls/ControlPrimitives.tsx';
 import {
   MELT_THEME_OPTIONS,
@@ -18,19 +17,10 @@ import {
 } from '~/lib/theme.ts';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 
-const QUALITY_OPTIONS = [
-  { label: 'Billboard', value: 'billboard' },
-  { label: 'Medium', value: 'medium' },
-  { label: 'High', value: 'high' },
-  { label: 'Ultra', value: 'ultra' },
-];
-
 export function Settings() {
-  const config = useConfigStore((state) => state.config);
   const connection = useConfigStore((state) => state.connection);
   const streamerbot = useConfigStore((state) => state.streamerbot);
   const lastError = useConfigStore((state) => state.lastError);
-  const patch = useConfigStore((state) => state.patch);
   const reset = useConfigStore((state) => state.reset);
   const [copied, setCopied] = useState(false);
   const [theme, setTheme] = useState<MeltTheme>(() => getStoredMeltTheme());
@@ -47,28 +37,10 @@ export function Settings() {
   return (
     <PageRoot>
       <SectionGrid columns={2}>
-        <Panel
-          title="Render"
-          action={<StatusPill label={config.QUALITY} tone="accent" />}
-        >
-          <SelectField
-            label="Quality"
-            value={config.QUALITY}
-            options={QUALITY_OPTIONS}
-            onChange={(value) =>
-              void patch({ QUALITY: value as 'billboard' | 'medium' | 'high' | 'ultra' })
-            }
-          />
-          <ToggleField
-            label="Wire network"
-            checked={config.USE_WIRE_NETWORK}
-            onChange={(value) => void patch({ USE_WIRE_NETWORK: value })}
-          />
-          <ToggleField
-            label="Billboard high-wire debug"
-            checked={config.BILLBOARD_DEBUG_HIGH_WIRE}
-            onChange={(value) => void patch({ BILLBOARD_DEBUG_HIGH_WIRE: value })}
-          />
+        <Panel title="Render">
+          <MessageBanner>
+            Wipes all rendering config back to the factory defaults.
+          </MessageBanner>
           <div className="mt-1">
             <ActionButton tone="danger" onClick={() => void reset()} full>
               Reset config to defaults

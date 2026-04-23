@@ -1,10 +1,39 @@
 import { BufferAttribute, BufferGeometry, Vector3 } from 'three';
 import type { TwistedCurve } from './TwistedCurve.ts';
 
+// ---------------------------------------------------------------------------
+// Ribbon geometry for billboarded wires
+// ---------------------------------------------------------------------------
+//
+// Each curve sample produces two collinear vertices at the curve's CENTER
+// point. The actual left/right extrusion happens in the vertex shader
+// (`createWireMaterial.ts`) by pushing each vertex along a camera-aligned
+// perpendicular. Because the perpendicular is recomputed per-frame from
+// `cameraPosition`, the ribbon's flat face always points at the camera
+// and we never see the "thin edge of paper" look.
+//
+// Attributes written here:
+//   • position (vec3) — curve center, duplicated for both sides.
+//   • normal   (vec3) — constant +Z (never sampled by the wire shader,
+//                       kept only so debug/std lighting passes don't crash).
+//   • uv       (vec2) — U along length, V = 0 on one side and 1 on the
+//                       other so the fragment shader can fake a rounded
+//                       cross-section.
+//   • aTangent (vec3) — normalized curve tangent at the sample, same for
+//                       both duplicated verts. Used by the vertex shader
+//                       to compute the view-aligned bitangent.
+//   • aSide    (float)— -1 for one side, +1 for the other. Multiplies the
+//                       thickness uniform in the vertex shader.
+//
+// Positions are written once at mount (or whenever the curve changes)
+// because the center points don't depend on the camera — only the
+// extrusion does. Keeping them static also means we get a cheap bounding
+// sphere that doesn't wobble with the camera.
+
 export interface RibbonBuffers {
   geometry: BufferGeometry;
   positions: Float32Array;
-  normals: Float32Array;
+  tangents: Float32Array;
   segments: number;
 }
 
@@ -29,71 +58,85 @@ export function allocateRibbonBuffers(segments: number): RibbonBuffers {
   const positions = new Float32Array(vertexCount * 3);
   const normals = new Float32Array(vertexCount * 3);
   const uvs = new Float32Array(vertexCount * 2);
+  const tangents = new Float32Array(vertexCount * 3);
+  const sides = new Float32Array(vertexCount);
+
   for (let i = 0; i <= segments; i++) {
     const t = i / segments;
+    // Left vertex: side = -1, V = 0
     uvs[i * 4] = t;
     uvs[i * 4 + 1] = 0;
+    sides[i * 2] = -1;
+    // Right vertex: side = +1, V = 1
     uvs[i * 4 + 2] = t;
     uvs[i * 4 + 3] = 1;
+    sides[i * 2 + 1] = 1;
+
+    normals[i * 6] = 0;
+    normals[i * 6 + 1] = 0;
+    normals[i * 6 + 2] = 1;
+    normals[i * 6 + 3] = 0;
+    normals[i * 6 + 4] = 0;
+    normals[i * 6 + 5] = 1;
   }
 
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new BufferAttribute(normals, 3));
   geometry.setAttribute('uv', new BufferAttribute(uvs, 2));
+  geometry.setAttribute('aTangent', new BufferAttribute(tangents, 3));
+  geometry.setAttribute('aSide', new BufferAttribute(sides, 1));
   geometry.setIndex(new BufferAttribute(indices, 1));
-  return { geometry, positions, normals, segments };
+  return { geometry, positions, tangents, segments };
 }
 
 const _P = new Vector3();
 const _T = new Vector3();
 
-// Legacy billboard ribbon: 2 vertices per sample, expanded perpendicular to the
-// curve's tangent in the world XY plane only (Z is preserved). This keeps the
-// wire visually flat toward the camera and hides the 3D helix twist that would
-// otherwise appear to rotate around the wire's axis as the camera zooms.
+// Writes curve center positions and per-vertex tangents once per mount /
+// curve change. The shader handles width extrusion every frame from
+// `cameraPosition`, so this never needs to run inside useFrame.
 export function writeRibbonPositions(
   buffers: RibbonBuffers,
   curve: TwistedCurve,
-  thickness: number,
 ): void {
-  const { positions, normals, segments, geometry } = buffers;
+  const { positions, tangents, segments, geometry } = buffers;
   for (let i = 0; i <= segments; i++) {
     const t = i / segments;
     curve.getPoint(t, _P);
-    curve.baseCurve.getTangent(t, _T);
-
-    // Bitangent in the XY plane perpendicular to the horizontal tangent.
-    let bx = -_T.y;
-    let by = _T.x;
-    const blen = Math.hypot(bx, by);
-    if (blen > 1e-6) {
-      bx /= blen;
-      by /= blen;
-    } else {
-      bx = 0;
-      by = 1;
-    }
+    // Use the TWISTED curve's tangent, not the base curve's. The base
+    // Catmull-Rom tangent points along the overall wire path, but the
+    // actual visible cord follows the twisted offset — sampling that
+    // tangent numerically gives us the direction the ribbon should be
+    // extruded perpendicular to, so the billboarding face stays flush
+    // with the visible cord at every twist. The old `baseCurve.getTangent`
+    // was producing a subtle lean that showed up as jagged silhouette
+    // wobble when the camera orbited.
+    curve.getTangent(t, _T);
+    _T.normalize();
 
     const leftIdx = i * 2 * 3;
     const rightIdx = (i * 2 + 1) * 3;
 
-    positions[leftIdx] = _P.x - thickness * bx;
-    positions[leftIdx + 1] = _P.y - thickness * by;
+    // Both duplicated verts sit exactly on the curve center — the shader
+    // moves them outward by +/- thickness along a view-aligned normal.
+    positions[leftIdx] = _P.x;
+    positions[leftIdx + 1] = _P.y;
     positions[leftIdx + 2] = _P.z;
 
-    positions[rightIdx] = _P.x + thickness * bx;
-    positions[rightIdx + 1] = _P.y + thickness * by;
+    positions[rightIdx] = _P.x;
+    positions[rightIdx + 1] = _P.y;
     positions[rightIdx + 2] = _P.z;
 
-    normals[leftIdx] = 0;
-    normals[leftIdx + 1] = 0;
-    normals[leftIdx + 2] = 1;
-    normals[rightIdx] = 0;
-    normals[rightIdx + 1] = 0;
-    normals[rightIdx + 2] = 1;
+    tangents[leftIdx] = _T.x;
+    tangents[leftIdx + 1] = _T.y;
+    tangents[leftIdx + 2] = _T.z;
+
+    tangents[rightIdx] = _T.x;
+    tangents[rightIdx + 1] = _T.y;
+    tangents[rightIdx + 2] = _T.z;
   }
   geometry.attributes.position!.needsUpdate = true;
-  geometry.attributes.normal!.needsUpdate = true;
+  geometry.attributes.aTangent!.needsUpdate = true;
   geometry.computeBoundingSphere();
 }

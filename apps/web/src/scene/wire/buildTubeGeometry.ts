@@ -84,14 +84,18 @@ export function writeTubePositions(
   geometry.computeBoundingSphere();
 }
 
-export function segmentCountForQuality(quality: string, wireTwists: number): number {
-  const qualityMap: Record<string, number> = {
-    billboard: 150,
-    medium: 750,
-    high: 1400,
-    ultra: 2000,
-  };
-  const segments = qualityMap[quality] ?? 1400;
+// Ribbon tessellation density.
+//
+// The QUALITY enum (billboard/medium/high/ultra) was deprecated — the
+// billboarded-ribbon pipeline is cheap enough that we can use a single
+// "looks good at any zoom" tessellation. We pick a base density and then
+// scale it up with WIRE_TWISTS so that at extreme twist counts the helix
+// still samples above the Nyquist of the twist frequency (otherwise
+// grooves alias into moire bands). 1200 base segments for ~215 twists is
+// visually indistinguishable from the old "ultra" tier at 215/40 multiplier
+// and stays far under the 4000-segment cap even at WIRE_TWISTS=1000.
+export function ribbonSegmentCount(wireTwists: number): number {
+  const BASE_SEGMENTS = 1200;
   const twistMultiplier = Math.max(1, wireTwists / 40);
-  return Math.min(4000, Math.floor(segments * twistMultiplier));
+  return Math.min(4000, Math.floor(BASE_SEGMENTS * twistMultiplier));
 }

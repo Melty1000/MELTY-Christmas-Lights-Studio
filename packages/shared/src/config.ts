@@ -10,8 +10,6 @@ export const ANIMATION_STYLES = [
   'PARTY',
 ] as const;
 
-export const QUALITY_TIERS = ['billboard', 'medium', 'high', 'ultra'] as const;
-
 export const THEME_NAMES = [
   'CANDY_CANE', 'CHRISTMAS', 'CLASSIC', 'CYBERPUNK', 'FANTASY', 'FIRE',
   'FOREST', 'GHOST', 'GOLD_RUSH', 'HALLOWEEN', 'ICY', 'LAVENDER', 'MINT',
@@ -47,7 +45,6 @@ export const configSchema = z.object({
 
   BULB_SCALE: z.number().min(0.1).max(3).default(0.23),
   WIRE_THICKNESS: z.number().min(0).max(0.2).default(0.031),
-  WIRE_OFFSET: z.number().min(0).max(1).default(0.02),
   WIRE_SEPARATION: z.number().min(0).max(0.3).default(0.036),
   WIRE_TWISTS: z.number().min(0).max(1000).default(215),
 
@@ -91,11 +88,6 @@ export const configSchema = z.object({
   CAMERA_X: z.number().min(-50).max(50).default(0),
 
   TENSION: z.number().min(-1).max(1).default(0),
-
-  QUALITY: z.enum(QUALITY_TIERS).default('medium'),
-
-  BILLBOARD_DEBUG_HIGH_WIRE: z.boolean().default(false),
-  USE_WIRE_NETWORK: z.boolean().default(false),
 });
 
 export type Config = z.infer<typeof configSchema>;

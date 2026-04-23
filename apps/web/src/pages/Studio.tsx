@@ -15,14 +15,14 @@ import {
   EmptyState,
   MessageBanner,
   PageRoot,
-  RangeField,
-  SectionColumns,
-  SelectField,
   StatusPill,
-  SubGroup,
   TextField,
-  ToggleField,
 } from '~/components/controls/ControlPrimitives.tsx';
+import {
+  BoundRange,
+  BoundSelect,
+  BoundToggle,
+} from '~/components/controls/BoundFields.tsx';
 import { formatToken } from '~/lib/format.ts';
 import {
   applyPreset,
@@ -36,492 +36,176 @@ import {
 } from '~/lib/presets.ts';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 
-export function Studio() {
-  const config = useConfigStore((state) => state.config);
-  const patch = useConfigStore((state) => state.patch);
-  const activeTheme = THEMES[config.ACTIVE_THEME];
+// ---------------------------------------------------------------------------
+// Studio
+// ---------------------------------------------------------------------------
+//
+// IMPORTANT: Studio itself subscribes to the MINIMUM needed from the config
+// store. Each `Bound*` field subscribes to its own key, so dragging any
+// slider re-renders only that slider — not the entire control panel. That
+// eliminates the 100-field walk on every pixel of drag that was causing
+// the lag.
+//
+// Layout: one flat column. The user explicitly asked for a single column
+// and for the dual-column + card-style grouping to go away, so the whole
+// page is just a sequence of collapsible sections with stacked fields.
+// ---------------------------------------------------------------------------
 
+const THEME_OPTIONS = THEME_NAMES.map((name) => ({
+  label: formatToken(name),
+  value: name,
+}));
+const SOCKET_OPTIONS = SOCKET_THEME_NAMES.map((name) => ({
+  label: formatToken(name),
+  value: name,
+}));
+const WIRE_OPTIONS = WIRE_THEME_NAMES.map((name) => ({
+  label: formatToken(name),
+  value: name,
+}));
+const ANIMATION_OPTIONS = ANIMATION_STYLES.map((name) => ({
+  label: formatToken(name),
+  value: name,
+}));
+
+export function Studio() {
   return (
     <PageRoot>
-      {/* ------------------------------------------------------------ */}
-      {/* THEME & COLORS                                                */}
-      {/* ------------------------------------------------------------ */}
-      <CollapsibleSection
-        id="theme"
-        title="Theme & Colors"
-        hint={`${activeTheme.bulbs.length} bulb colors`}
-        defaultOpen
-        action={<StatusPill label={formatToken(config.ACTIVE_THEME)} tone="accent" />}
-      >
-        <SelectField
-          label="Bulb theme"
-          value={config.ACTIVE_THEME}
-          options={THEME_NAMES.map((name) => ({ label: formatToken(name), value: name }))}
-          onChange={(value) =>
-            void patch({ ACTIVE_THEME: value as (typeof THEME_NAMES)[number] })
-          }
-        />
-        <SelectField
-          label="Socket theme"
-          value={config.SOCKET_THEME}
-          options={SOCKET_THEME_NAMES.map((name) => ({
-            label: formatToken(name),
-            value: name,
-          }))}
-          onChange={(value) =>
-            void patch({ SOCKET_THEME: value as (typeof SOCKET_THEME_NAMES)[number] })
-          }
-        />
-        <SelectField
-          label="Wire theme"
-          value={config.WIRE_THEME}
-          options={WIRE_THEME_NAMES.map((name) => ({
-            label: formatToken(name),
-            value: name,
-          }))}
-          onChange={(value) =>
-            void patch({ WIRE_THEME: value as (typeof WIRE_THEME_NAMES)[number] })
-          }
-        />
-        <ColorStrip colors={activeTheme.bulbs} />
-      </CollapsibleSection>
+      <ThemeSection />
 
-      {/* ------------------------------------------------------------ */}
-      {/* BULBS                                                         */}
-      {/* ------------------------------------------------------------ */}
       <CollapsibleSection id="bulbs" title="Bulbs" defaultOpen>
-        <SectionColumns columns={2}>
-          <SubGroup title="Geometry">
-            <RangeField
-              label="Bulb scale"
-              min={0.1}
-              max={3}
-              step={0.01}
-              value={config.BULB_SCALE}
-              onChange={(value) => void patch({ BULB_SCALE: value })}
-            />
-          </SubGroup>
-          <SubGroup title="Glass">
-            <RangeField
-              label="Opacity"
-              min={0}
-              max={1}
-              step={0.01}
-              value={config.GLASS_OPACITY}
-              onChange={(value) => void patch({ GLASS_OPACITY: value })}
-            />
-            <RangeField
-              label="Roughness"
-              min={0}
-              max={1}
-              step={0.01}
-              value={config.GLASS_ROUGHNESS}
-              onChange={(value) => void patch({ GLASS_ROUGHNESS: value })}
-            />
-            <RangeField
-              label="IOR"
-              min={1}
-              max={3}
-              step={0.01}
-              value={config.GLASS_IOR}
-              onChange={(value) => void patch({ GLASS_IOR: value })}
-            />
-          </SubGroup>
-        </SectionColumns>
+        <BoundRange field="BULB_SCALE" label="Bulb scale" min={0.1} max={3} step={0.01} />
+        <BoundRange field="GLASS_OPACITY" label="Glass opacity" min={0} max={1} step={0.01} />
+        <BoundRange field="GLASS_ROUGHNESS" label="Glass roughness" min={0} max={1} step={0.01} />
+        <BoundRange field="GLASS_IOR" label="Glass IOR" min={1} max={3} step={0.01} />
       </CollapsibleSection>
 
-      {/* ------------------------------------------------------------ */}
-      {/* WIRES                                                         */}
-      {/* ------------------------------------------------------------ */}
-      <CollapsibleSection
-        id="wires"
-        title="Wires"
-        hint={`${config.NUM_PINS - 1} spans`}
-      >
-        <SectionColumns columns={2}>
-          <SubGroup title="Geometry">
-            <RangeField
-              label="Pin points"
-              min={2}
-              max={20}
-              step={1}
-              value={config.NUM_PINS}
-              onChange={(value) => void patch({ NUM_PINS: Math.round(value) })}
-            />
-            <RangeField
-              label="Lights / span"
-              min={1}
-              max={100}
-              step={1}
-              value={config.LIGHTS_PER_SEGMENT}
-              onChange={(value) => void patch({ LIGHTS_PER_SEGMENT: Math.round(value) })}
-            />
-            <RangeField
-              label="Sag"
-              min={0}
-              max={2}
-              step={0.01}
-              value={config.SAG_AMPLITUDE}
-              onChange={(value) => void patch({ SAG_AMPLITUDE: value })}
-            />
-            <RangeField
-              label="Tension"
-              min={-1}
-              max={1}
-              step={0.01}
-              value={config.TENSION}
-              onChange={(value) => void patch({ TENSION: value })}
-            />
-          </SubGroup>
-          <SubGroup title="Appearance">
-            <RangeField
-              label="Thickness"
-              min={0}
-              max={0.2}
-              step={0.001}
-              value={config.WIRE_THICKNESS}
-              onChange={(value) => void patch({ WIRE_THICKNESS: value })}
-            />
-            <RangeField
-              label="Separation"
-              min={0}
-              max={0.3}
-              step={0.001}
-              value={config.WIRE_SEPARATION}
-              onChange={(value) => void patch({ WIRE_SEPARATION: value })}
-            />
-            <RangeField
-              label="Offset"
-              min={0}
-              max={1}
-              step={0.001}
-              value={config.WIRE_OFFSET}
-              onChange={(value) => void patch({ WIRE_OFFSET: value })}
-            />
-            <RangeField
-              label="Twists"
-              min={0}
-              max={1000}
-              step={1}
-              value={config.WIRE_TWISTS}
-              onChange={(value) => void patch({ WIRE_TWISTS: Math.round(value) })}
-            />
-          </SubGroup>
-        </SectionColumns>
+      <WiresSection />
+
+      <CollapsibleSection id="motion" title="Motion">
+        <BoundSelect field="ANIMATION_STYLE" label="Style" options={ANIMATION_OPTIONS} />
+        <BoundRange field="ANIMATION_SPEED" label="Animation speed" min={0} max={5} step={0.01} />
+        <BoundRange field="SWAY_X" label="Sway X" min={0} max={2} step={0.01} />
+        <BoundRange field="SWAY_Z" label="Sway Z" min={0} max={2} step={0.01} />
       </CollapsibleSection>
 
-      {/* ------------------------------------------------------------ */}
-      {/* MOTION & EFFECTS                                              */}
-      {/* ------------------------------------------------------------ */}
-      <CollapsibleSection id="motion" title="Motion & Effects">
-        <SectionColumns columns={2}>
-          <SubGroup title="Animation">
-            <SelectField
-              label="Style"
-              value={config.ANIMATION_STYLE}
-              options={ANIMATION_STYLES.map((name) => ({
-                label: formatToken(name),
-                value: name,
-              }))}
-              onChange={(value) =>
-                void patch({ ANIMATION_STYLE: value as (typeof ANIMATION_STYLES)[number] })
-              }
-            />
-            <RangeField
-              label="Speed"
-              min={0}
-              max={5}
-              step={0.01}
-              value={config.ANIMATION_SPEED}
-              onChange={(value) => void patch({ ANIMATION_SPEED: value })}
-            />
-            <RangeField
-              label="Sway X"
-              min={0}
-              max={2}
-              step={0.01}
-              value={config.SWAY_X}
-              onChange={(value) => void patch({ SWAY_X: value })}
-            />
-            <RangeField
-              label="Sway Z"
-              min={0}
-              max={2}
-              step={0.01}
-              value={config.SWAY_Z}
-              onChange={(value) => void patch({ SWAY_Z: value })}
-            />
-          </SubGroup>
-          <SubGroup title="Twinkle">
-            <RangeField
-              label="Speed"
-              min={0}
-              max={4}
-              step={0.01}
-              value={config.TWINKLE_SPEED}
-              onChange={(value) => void patch({ TWINKLE_SPEED: value })}
-            />
-            <RangeField
-              label="Min intensity"
-              min={0}
-              max={1}
-              step={0.01}
-              value={config.TWINKLE_MIN_INTENSITY}
-              onChange={(value) => void patch({ TWINKLE_MIN_INTENSITY: value })}
-            />
-            <RangeField
-              label="Max intensity"
-              min={0}
-              max={1}
-              step={0.01}
-              value={config.TWINKLE_MAX_INTENSITY}
-              onChange={(value) => void patch({ TWINKLE_MAX_INTENSITY: value })}
-            />
-            <RangeField
-              label="Randomness"
-              min={0}
-              max={1}
-              step={0.01}
-              value={config.TWINKLE_RANDOMNESS}
-              onChange={(value) => void patch({ TWINKLE_RANDOMNESS: value })}
-            />
-          </SubGroup>
-        </SectionColumns>
+      <CollapsibleSection id="twinkle" title="Twinkle">
+        <BoundRange field="TWINKLE_SPEED" label="Twinkle speed" min={0} max={4} step={0.01} />
+        <BoundRange field="TWINKLE_MIN_INTENSITY" label="Min intensity" min={0} max={1} step={0.01} />
+        <BoundRange field="TWINKLE_MAX_INTENSITY" label="Max intensity" min={0} max={1} step={0.01} />
+        <BoundRange field="TWINKLE_RANDOMNESS" label="Randomness" min={0} max={1} step={0.01} />
       </CollapsibleSection>
 
-      {/* ------------------------------------------------------------ */}
-      {/* CAMERA                                                        */}
-      {/* ------------------------------------------------------------ */}
       <CollapsibleSection id="camera" title="Camera">
-        <RangeField
-          label="Distance"
-          min={1}
-          max={200}
-          step={0.1}
-          value={config.CAMERA_DISTANCE}
-          onChange={(value) => void patch({ CAMERA_DISTANCE: value })}
-        />
-        <RangeField
-          label="Height (Y)"
-          min={-50}
-          max={50}
-          step={0.1}
-          value={config.CAMERA_HEIGHT}
-          onChange={(value) => void patch({ CAMERA_HEIGHT: value })}
-        />
-        <RangeField
-          label="Pan (X)"
-          min={-50}
-          max={50}
-          step={0.1}
-          value={config.CAMERA_X}
-          onChange={(value) => void patch({ CAMERA_X: value })}
-        />
+        <BoundRange field="CAMERA_DISTANCE" label="Distance" min={1} max={200} step={0.1} />
+        <BoundRange field="CAMERA_HEIGHT" label="Height (Y)" min={-50} max={50} step={0.1} />
+        <BoundRange field="CAMERA_X" label="Pan (X)" min={-50} max={50} step={0.1} />
       </CollapsibleSection>
 
-      {/* ------------------------------------------------------------ */}
-      {/* LIGHTING                                                      */}
-      {/* ------------------------------------------------------------ */}
       <CollapsibleSection id="lighting" title="Scene Lighting">
-        <RangeField
-          label="Ambient"
-          min={0}
-          max={5}
-          step={0.01}
-          value={config.AMBIENT_INTENSITY}
-          onChange={(value) => void patch({ AMBIENT_INTENSITY: value })}
-        />
-        <RangeField
-          label="Key light"
-          min={0}
-          max={5}
-          step={0.01}
-          value={config.KEY_LIGHT_INTENSITY}
-          onChange={(value) => void patch({ KEY_LIGHT_INTENSITY: value })}
-        />
-        <RangeField
-          label="Fill light"
-          min={0}
-          max={5}
-          step={0.01}
-          value={config.FILL_LIGHT_INTENSITY}
-          onChange={(value) => void patch({ FILL_LIGHT_INTENSITY: value })}
-        />
-        <RangeField
-          label="Hemisphere"
-          min={0}
-          max={5}
-          step={0.01}
-          value={config.HEMI_LIGHT_INTENSITY}
-          onChange={(value) => void patch({ HEMI_LIGHT_INTENSITY: value })}
-        />
-        <ToggleField
-          label="Reflections"
-          checked={config.POINT_LIGHTS_ENABLED}
-          onChange={(value) => void patch({ POINT_LIGHTS_ENABLED: value })}
-        />
+        <BoundRange field="AMBIENT_INTENSITY" label="Ambient" min={0} max={5} step={0.01} />
+        <BoundRange field="KEY_LIGHT_INTENSITY" label="Key light" min={0} max={5} step={0.01} />
+        <BoundRange field="FILL_LIGHT_INTENSITY" label="Fill light" min={0} max={5} step={0.01} />
+        <BoundRange field="HEMI_LIGHT_INTENSITY" label="Hemisphere" min={0} max={5} step={0.01} />
+        <BoundToggle field="POINT_LIGHTS_ENABLED" label="Reflections" />
       </CollapsibleSection>
 
-      {/* ------------------------------------------------------------ */}
-      {/* POST FX                                                       */}
-      {/* ------------------------------------------------------------ */}
       <CollapsibleSection id="postfx" title="Post FX / Bloom">
-        <ToggleField
-          label="Post FX"
-          checked={config.POSTFX_ENABLED}
-          onChange={(value) => void patch({ POSTFX_ENABLED: value })}
-        />
-        <RangeField
-          label="Strength"
-          min={0}
-          max={5}
-          step={0.01}
-          value={config.BLOOM_STRENGTH}
-          onChange={(value) => void patch({ BLOOM_STRENGTH: value })}
-        />
-        <RangeField
-          label="Radius"
-          min={0}
-          max={2}
-          step={0.01}
-          value={config.BLOOM_RADIUS}
-          onChange={(value) => void patch({ BLOOM_RADIUS: value })}
-        />
-        <RangeField
-          label="Threshold"
-          min={0}
-          max={1}
-          step={0.01}
-          value={config.BLOOM_THRESHOLD}
-          onChange={(value) => void patch({ BLOOM_THRESHOLD: value })}
-        />
-        <RangeField
-          label="Intensity"
-          min={0}
-          max={5}
-          step={0.01}
-          value={config.BLOOM_INTENSITY}
-          onChange={(value) => void patch({ BLOOM_INTENSITY: value })}
-        />
+        <BoundToggle field="POSTFX_ENABLED" label="Post FX" />
+        <BoundRange field="BLOOM_STRENGTH" label="Strength" min={0} max={5} step={0.01} />
+        <BoundRange field="BLOOM_RADIUS" label="Radius" min={0} max={2} step={0.01} />
+        <BoundRange field="BLOOM_THRESHOLD" label="Threshold" min={0} max={1} step={0.01} />
+        <BoundRange field="BLOOM_INTENSITY" label="Intensity" min={0} max={5} step={0.01} />
       </CollapsibleSection>
 
-      {/* ------------------------------------------------------------ */}
-      {/* ENVIRONMENT                                                   */}
-      {/* ------------------------------------------------------------ */}
       <CollapsibleSection id="environment" title="Environment">
-        <SectionColumns columns={2}>
-          <SubGroup title="Backdrop">
-            <ToggleField
-              label="Solid background"
-              checked={config.BACKGROUND_ENABLED}
-              onChange={(value) => void patch({ BACKGROUND_ENABLED: value })}
-            />
-            <ToggleField
-              label="Antialiasing"
-              checked={config.ANTIALIAS_ENABLED}
-              onChange={(value) => void patch({ ANTIALIAS_ENABLED: value })}
-            />
-            <ToggleField
-              label="Stats panel"
-              checked={config.STATS_ENABLED}
-              onChange={(value) => void patch({ STATS_ENABLED: value })}
-            />
-          </SubGroup>
-          <SubGroup title="Snow">
-            <ToggleField
-              label="Enable snow"
-              checked={config.SNOW_ENABLED}
-              onChange={(value) => void patch({ SNOW_ENABLED: value })}
-            />
-            <RangeField
-              label="Count"
-              min={0}
-              max={2000}
-              step={1}
-              value={config.SNOW_COUNT}
-              onChange={(value) => void patch({ SNOW_COUNT: Math.round(value) })}
-            />
-            <RangeField
-              label="Speed"
-              min={0}
-              max={0.1}
-              step={0.001}
-              value={config.SNOW_SPEED}
-              onChange={(value) => void patch({ SNOW_SPEED: value })}
-            />
-            <RangeField
-              label="Size"
-              min={0}
-              max={0.5}
-              step={0.001}
-              value={config.SNOW_SIZE}
-              onChange={(value) => void patch({ SNOW_SIZE: value })}
-            />
-            <RangeField
-              label="Drift"
-              min={-1}
-              max={1}
-              step={0.01}
-              value={config.SNOW_DRIFT}
-              onChange={(value) => void patch({ SNOW_DRIFT: value })}
-            />
-          </SubGroup>
-          <SubGroup title="Stars">
-            <ToggleField
-              label="Enable stars"
-              checked={config.STARS_ENABLED}
-              onChange={(value) => void patch({ STARS_ENABLED: value })}
-            />
-            <RangeField
-              label="Count"
-              min={0}
-              max={2000}
-              step={1}
-              value={config.STARS_COUNT}
-              onChange={(value) => void patch({ STARS_COUNT: Math.round(value) })}
-            />
-            <RangeField
-              label="Size"
-              min={0}
-              max={1}
-              step={0.01}
-              value={config.STARS_SIZE}
-              onChange={(value) => void patch({ STARS_SIZE: value })}
-            />
-            <RangeField
-              label="Opacity"
-              min={0}
-              max={1}
-              step={0.01}
-              value={config.STARS_OPACITY}
-              onChange={(value) => void patch({ STARS_OPACITY: value })}
-            />
-            <RangeField
-              label="Twinkle speed"
-              min={0}
-              max={5}
-              step={0.01}
-              value={config.STARS_TWINKLE_SPEED}
-              onChange={(value) => void patch({ STARS_TWINKLE_SPEED: value })}
-            />
-          </SubGroup>
-        </SectionColumns>
+        <BoundToggle field="BACKGROUND_ENABLED" label="Solid background" />
+        <BoundToggle field="ANTIALIAS_ENABLED" label="Antialiasing" />
+        <BoundToggle field="STATS_ENABLED" label="Stats panel" />
       </CollapsibleSection>
 
-      {/* ------------------------------------------------------------ */}
-      {/* PRESETS                                                       */}
-      {/* ------------------------------------------------------------ */}
+      <CollapsibleSection id="snow" title="Snow">
+        <BoundToggle field="SNOW_ENABLED" label="Enable snow" />
+        <BoundRange field="SNOW_COUNT" label="Count" min={0} max={2000} step={1} round />
+        <BoundRange field="SNOW_SPEED" label="Speed" min={0} max={0.1} step={0.001} />
+        <BoundRange field="SNOW_SIZE" label="Size" min={0} max={0.5} step={0.001} />
+        <BoundRange field="SNOW_DRIFT" label="Drift" min={-1} max={1} step={0.01} />
+      </CollapsibleSection>
+
+      <CollapsibleSection id="stars" title="Stars">
+        <BoundToggle field="STARS_ENABLED" label="Enable stars" />
+        <BoundRange field="STARS_COUNT" label="Count" min={0} max={2000} step={1} round />
+        <BoundRange field="STARS_SIZE" label="Size" min={0} max={1} step={0.01} />
+        <BoundRange field="STARS_OPACITY" label="Opacity" min={0} max={1} step={0.01} />
+        <BoundRange field="STARS_TWINKLE_SPEED" label="Twinkle speed" min={0} max={5} step={0.01} />
+      </CollapsibleSection>
+
       <PresetsCollapsible />
     </PageRoot>
   );
 }
 
+// Theme section is split out because it reads the live palette + label to
+// feed the header hint and <ColorStrip>. Extracting it keeps the main
+// Studio body free of a config subscription entirely.
+function ThemeSection() {
+  const activeThemeKey = useConfigStore((s) => s.config.ACTIVE_THEME);
+  const activeTheme = THEMES[activeThemeKey];
+
+  return (
+    <CollapsibleSection
+      id="theme"
+      title="Theme & Colors"
+      hint={`${activeTheme.bulbs.length} bulb colors`}
+      defaultOpen
+      action={<StatusPill label={formatToken(activeThemeKey)} tone="accent" />}
+    >
+      <BoundSelect field="ACTIVE_THEME" label="Bulb theme" options={THEME_OPTIONS} />
+      <BoundSelect field="SOCKET_THEME" label="Socket theme" options={SOCKET_OPTIONS} />
+      <BoundSelect field="WIRE_THEME" label="Wire theme" options={WIRE_OPTIONS} />
+      <ColorStrip colors={activeTheme.bulbs} />
+    </CollapsibleSection>
+  );
+}
+
+// Wires header shows a live pin-count hint, so it subscribes to just that
+// one number. Field re-renders are scoped to the header badge only.
+function WiresSection() {
+  const numPins = useConfigStore((s) => s.config.NUM_PINS);
+
+  return (
+    <CollapsibleSection id="wires" title="Wires" hint={`${Math.max(numPins - 1, 0)} spans`}>
+      <BoundRange field="NUM_PINS" label="Pin points" min={2} max={20} step={1} round />
+      <BoundRange field="LIGHTS_PER_SEGMENT" label="Lights / span" min={1} max={100} step={1} round />
+      <BoundRange field="SAG_AMPLITUDE" label="Sag" min={0} max={2} step={0.01} />
+      <BoundRange field="TENSION" label="Tension" min={-1} max={1} step={0.01} />
+      <BoundRange field="WIRE_THICKNESS" label="Thickness" min={0} max={0.2} step={0.001} />
+      <BoundRange field="WIRE_SEPARATION" label="Separation" min={0} max={0.3} step={0.001} />
+      <BoundRange field="WIRE_TWISTS" label="Twists" min={0} max={1000} step={1} round />
+    </CollapsibleSection>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Presets — embedded inline so the whole studio lives in one page
+// Presets
+// ---------------------------------------------------------------------------
+// The list + form block used to do `const config = useConfigStore
+// (s => s.config)` on the parent, which re-ran the entire preset list
+// (and every `presets.map` card) on every slider tick. Save / export read
+// `getState().config` at click time. The snapshot id is just the slug of
+// the draft fields — it does not depend on live config, so we never
+// subscribe to `config` here at all.
 // ---------------------------------------------------------------------------
 
+function PresetSnapshotId({ draftName, draftId }: { draftName: string; draftId: string }) {
+  const snapshotId = useMemo(
+    () => slugifyPresetId(draftId || draftName || 'current-look'),
+    [draftName, draftId],
+  );
+  return <CodeBlock label="Snapshot id" value={snapshotId} />;
+}
+
 function PresetsCollapsible() {
-  const config = useConfigStore((state) => state.config);
   const hydrate = useConfigStore((state) => state.hydrate);
 
   const [presets, setPresets] = useState<Preset[]>([]);
@@ -577,7 +261,11 @@ function PresetsCollapsible() {
     }
     setBusy(true);
     try {
-      const preset = buildPreset(normalizedName, normalizedId, config);
+      const preset = buildPreset(
+        normalizedName,
+        normalizedId,
+        useConfigStore.getState().config,
+      );
       await savePreset(preset);
       await refreshPresets();
       setSelectedId(normalizedId);
@@ -632,12 +320,6 @@ function PresetsCollapsible() {
     }
   }
 
-  const currentScenePreset = buildPreset(
-    draftName.trim() || 'Current Look',
-    slugifyPresetId(draftId || draftName || 'current-look'),
-    config,
-  );
-
   return (
     <CollapsibleSection
       id="presets"
@@ -645,123 +327,126 @@ function PresetsCollapsible() {
       hint={`${presets.length} saved`}
       action={loading ? <StatusPill label="Loading" tone="warn" /> : null}
     >
-      <SectionColumns columns={2}>
-        <SubGroup title="Save Current Look">
-          <TextField
-            label="Name"
-            value={draftName}
-            onChange={(value) => {
-              setDraftName(value);
-              if (!selectedId) setDraftId(slugifyPresetId(value));
-            }}
-          />
-          <TextField
-            label="ID"
-            value={draftId}
-            onChange={(value) => setDraftId(slugifyPresetId(value))}
-          />
-          <div className="flex flex-wrap gap-2 px-1.5 py-1">
-            <ActionButton onClick={() => void handleSave()} disabled={busy}>
-              {selectedPreset && selectedPreset.id === draftId ? 'Update' : 'Save'}
-            </ActionButton>
-            <ActionButton
-              tone="secondary"
-              onClick={() => exportPresetFile(currentScenePreset)}
-            >
-              Export JSON
-            </ActionButton>
-            <ActionButton
-              tone="secondary"
-              onClick={() => importInputRef.current?.click()}
-              disabled={busy}
-            >
-              Import JSON
-            </ActionButton>
-            <ActionButton tone="secondary" onClick={() => void refreshPresets()} disabled={busy}>
-              Refresh
-            </ActionButton>
-            <ActionButton tone="secondary" onClick={clearEditor}>
-              Clear
-            </ActionButton>
-          </div>
-          <CodeBlock label="Snapshot id" value={currentScenePreset.id} />
-          {message ? <MessageBanner>{message}</MessageBanner> : null}
-          <input
-            ref={importInputRef}
-            type="file"
-            accept="application/json"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              if (file) void handleImport(file);
-              event.currentTarget.value = '';
-            }}
-          />
-        </SubGroup>
+      <TextField
+        label="Name"
+        value={draftName}
+        onChange={(value) => {
+          setDraftName(value);
+          if (!selectedId) setDraftId(slugifyPresetId(value));
+        }}
+      />
+      <TextField
+        label="ID"
+        value={draftId}
+        onChange={(value) => setDraftId(slugifyPresetId(value))}
+      />
+      <div className="flex flex-wrap gap-2 px-1.5 py-1">
+        <ActionButton onClick={() => void handleSave()} disabled={busy}>
+          {selectedPreset && selectedPreset.id === draftId ? 'Update' : 'Save'}
+        </ActionButton>
+        <ActionButton
+          tone="secondary"
+          onClick={() => {
+            const c = useConfigStore.getState().config;
+            exportPresetFile(
+              buildPreset(
+                draftName.trim() || 'Current Look',
+                slugifyPresetId(draftId || draftName || 'current-look'),
+                c,
+              ),
+            );
+          }}
+        >
+          Export JSON
+        </ActionButton>
+        <ActionButton
+          tone="secondary"
+          onClick={() => importInputRef.current?.click()}
+          disabled={busy}
+        >
+          Import JSON
+        </ActionButton>
+        <ActionButton tone="secondary" onClick={() => void refreshPresets()} disabled={busy}>
+          Refresh
+        </ActionButton>
+        <ActionButton tone="secondary" onClick={clearEditor}>
+          Clear
+        </ActionButton>
+      </div>
+      <PresetSnapshotId draftName={draftName} draftId={draftId} />
+      {message ? <MessageBanner>{message}</MessageBanner> : null}
+      <input
+        ref={importInputRef}
+        type="file"
+        accept="application/json"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file) void handleImport(file);
+          event.currentTarget.value = '';
+        }}
+      />
 
-        <SubGroup title="Library">
-          <div className="grid max-h-[50vh] gap-2 overflow-y-auto pr-1">
-            {presets.length === 0 && !loading ? (
-              <EmptyState>
-                No presets saved yet. Save the current look or import JSON to get started.
-              </EmptyState>
-            ) : null}
-            {presets.map((preset) => (
-              <article
-                key={preset.id}
-                className={`rounded-lg border px-3 py-2.5 transition-colors ${
-                  selectedId === preset.id
-                    ? 'border-melt-accent/40 bg-melt-accent/10'
-                    : 'border-melt-text-muted/10 bg-melt-surface/20 hover:border-melt-accent/25'
-                }`}
+      <div className="grid max-h-[50vh] gap-2 overflow-y-auto pr-1">
+        {presets.length === 0 && !loading ? (
+          <EmptyState>
+            No presets saved yet. Save the current look or import JSON to get started.
+          </EmptyState>
+        ) : null}
+        {presets.map((preset) => (
+          <article
+            key={preset.id}
+            className={`rounded-lg border px-3 py-2.5 transition-colors ${
+              selectedId === preset.id
+                ? 'border-melt-accent/40 bg-melt-accent/10'
+                : 'border-melt-text-muted/10 bg-melt-surface/20 hover:border-melt-accent/25'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => loadIntoEditor(preset)}
+                className="text-left"
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => loadIntoEditor(preset)}
-                    className="text-left"
-                  >
-                    <div className="text-[12px] font-black tracking-[0.08em] uppercase text-melt-text-heading">
-                      {preset.name}
-                    </div>
-                    <div className="mt-0.5 font-mono text-[10px] text-melt-text-muted">
-                      {preset.id}
-                    </div>
-                  </button>
-                  <div className="flex flex-wrap gap-1">
-                    {preset.builtIn ? (
-                      <StatusPill label="Built in" tone="neutral" />
-                    ) : (
-                      <StatusPill label="Custom" tone="accent" />
-                    )}
-                  </div>
+                <div className="text-[12px] font-black tracking-[0.08em] uppercase text-melt-text-heading">
+                  {preset.name}
                 </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <ActionButton
-                    tone="secondary"
-                    onClick={() => void handleApply(preset.id)}
-                    disabled={busy}
-                  >
-                    Apply
-                  </ActionButton>
-                  <ActionButton tone="secondary" onClick={() => exportPresetFile(preset)}>
-                    Export
-                  </ActionButton>
-                  {!preset.builtIn ? (
-                    <ActionButton
-                      tone="danger"
-                      onClick={() => void handleDelete(preset.id)}
-                      disabled={busy}
-                    >
-                      Delete
-                    </ActionButton>
-                  ) : null}
+                <div className="mt-0.5 font-mono text-[10px] text-melt-text-muted">
+                  {preset.id}
                 </div>
-              </article>
-            ))}
-          </div>
-        </SubGroup>
-      </SectionColumns>
+              </button>
+              <div className="flex flex-wrap gap-1">
+                {preset.builtIn ? (
+                  <StatusPill label="Built in" tone="neutral" />
+                ) : (
+                  <StatusPill label="Custom" tone="accent" />
+                )}
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <ActionButton
+                tone="secondary"
+                onClick={() => void handleApply(preset.id)}
+                disabled={busy}
+              >
+                Apply
+              </ActionButton>
+              <ActionButton tone="secondary" onClick={() => exportPresetFile(preset)}>
+                Export
+              </ActionButton>
+              {!preset.builtIn ? (
+                <ActionButton
+                  tone="danger"
+                  onClick={() => void handleDelete(preset.id)}
+                  disabled={busy}
+                >
+                  Delete
+                </ActionButton>
+              ) : null}
+            </div>
+          </article>
+        ))}
+      </div>
     </CollapsibleSection>
   );
 }

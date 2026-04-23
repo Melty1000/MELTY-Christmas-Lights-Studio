@@ -1,6 +1,70 @@
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useState } from 'react';
+import {
+  type ChangeEvent,
+  type ComponentType,
+  type ReactNode,
+  memo,
+  useCallback,
+  useEffect,
+  useState,
+} from 'react';
 import clsx from 'clsx';
 import { ChevronDown } from 'lucide-react';
+
+// ---------------------------------------------------------------------------
+// Field memoization helper
+// ---------------------------------------------------------------------------
+//
+// The Studio page subscribes to the whole config object, so every slider tick
+// re-renders the entire page tree. With ~80 form fields built inline, that
+// adds up to noticeable lag while dragging. Wrapping each leaf in React.memo
+// cuts the work to "only the field whose value actually changed" — but a naive
+// memo fails because:
+//   1. Every parent render creates a new inline `onChange` closure, so the
+//      function ref is never stable. In this app every `onChange` is just a
+//      thin wrapper over the stable `patch()` from the store, so we can treat
+//      function props as always-equal without losing correctness.
+//   2. `options={X.map(...)}` likewise produces a new array every render even
+//      though the contents are stable, so we compare arrays by length + shallow
+//      element equality.
+function propsEqualIgnoringFunctions<P extends object>(prev: P, next: P): boolean {
+  const keys = Object.keys(prev) as Array<keyof P>;
+  if (keys.length !== Object.keys(next).length) return false;
+  for (const key of keys) {
+    const a = prev[key];
+    const b = next[key];
+    if (a === b) continue;
+    if (typeof a === 'function' && typeof b === 'function') continue;
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length) return false;
+      let arrayEqual = true;
+      for (let i = 0; i < a.length; i++) {
+        const ai = a[i] as unknown;
+        const bi = b[i] as unknown;
+        if (ai === bi) continue;
+        if (
+          ai &&
+          bi &&
+          typeof ai === 'object' &&
+          typeof bi === 'object' &&
+          (ai as { value?: unknown }).value === (bi as { value?: unknown }).value &&
+          (ai as { label?: unknown }).label === (bi as { label?: unknown }).label
+        ) {
+          continue;
+        }
+        arrayEqual = false;
+        break;
+      }
+      if (arrayEqual) continue;
+      return false;
+    }
+    return false;
+  }
+  return true;
+}
+
+function memoField<P extends object>(component: ComponentType<P>): ComponentType<P> {
+  return memo(component, propsEqualIgnoringFunctions) as unknown as ComponentType<P>;
+}
 
 // ---------------------------------------------------------------------------
 // Layout primitives
@@ -155,36 +219,31 @@ export function SectionColumns({
   );
 }
 
+// SubGroup used to wrap its children in a bordered, tinted card with an
+// uppercase header ("GEOMETRY", "APPEARANCE", etc.). The user doesn't want
+// that visual chrome inside a collapsed section — they want the dual-column
+// layout but with each field sitting directly on the section background.
+// We keep the same API (and therefore every call site) but render just a
+// vertical spacer; the enclosing <SectionColumns columns={2}> in each
+// CollapsibleSection provides the side-by-side layout.
 export function SubGroup({
-  title,
+  // `title` is intentionally ignored; left in the props to avoid a
+  // widespread Studio rewrite. If we ever want per-group labels back we can
+  // surface them here again without changing every call site.
+  title: _title,
   children,
 }: {
   title: string;
   children: ReactNode;
 }) {
-  return (
-    <div className="rounded-lg border border-melt-text-muted/5 bg-melt-surface/10 p-2">
-      <div className="px-1.5 pb-1.5 pt-0.5 text-[9px] font-black tracking-[0.22em] uppercase text-melt-text-muted">
-        {title}
-      </div>
-      <div className="grid gap-1">{children}</div>
-    </div>
-  );
+  return <div className="grid gap-1">{children}</div>;
 }
 
 // ---------------------------------------------------------------------------
 // Field primitives — compact single-row layout
 // ---------------------------------------------------------------------------
 
-export function RangeField({
-  label,
-  min,
-  max,
-  step,
-  value,
-  onChange,
-  format = defaultNumberFormat,
-}: {
+type RangeFieldProps = {
   label: string;
   min: number;
   max: number;
@@ -192,7 +251,17 @@ export function RangeField({
   value: number;
   onChange: (value: number) => void;
   format?: (value: number) => string;
-}) {
+};
+
+function RangeFieldImpl({
+  label,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+  format = defaultNumberFormat,
+}: RangeFieldProps) {
   return (
     <div className="grid grid-cols-[120px_1fr_64px] items-center gap-3 rounded-md px-2 py-1.5 hover:bg-melt-surface/20">
       <label className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
@@ -223,15 +292,15 @@ export function RangeField({
   );
 }
 
-export function ToggleField({
-  label,
-  checked,
-  onChange,
-}: {
+export const RangeField = memoField<RangeFieldProps>(RangeFieldImpl);
+
+type ToggleFieldProps = {
   label: string;
   checked: boolean;
   onChange: (value: boolean) => void;
-}) {
+};
+
+function ToggleFieldImpl({ label, checked, onChange }: ToggleFieldProps) {
   return (
     <div className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-md px-2 py-1.5 hover:bg-melt-surface/20">
       <label className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
@@ -259,17 +328,16 @@ export function ToggleField({
   );
 }
 
-export function SelectField({
-  label,
-  value,
-  options,
-  onChange,
-}: {
+export const ToggleField = memoField<ToggleFieldProps>(ToggleFieldImpl);
+
+type SelectFieldProps = {
   label: string;
   value: string;
   options: Array<{ label: string; value: string }>;
   onChange: (value: string) => void;
-}) {
+};
+
+function SelectFieldImpl({ label, value, options, onChange }: SelectFieldProps) {
   return (
     <div className="grid grid-cols-[120px_1fr] items-center gap-3 rounded-md px-2 py-1.5 hover:bg-melt-surface/20">
       <label className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
@@ -304,17 +372,16 @@ export function SelectField({
   );
 }
 
-export function TextField({
-  label,
-  value,
-  placeholder,
-  onChange,
-}: {
+export const SelectField = memoField<SelectFieldProps>(SelectFieldImpl);
+
+type TextFieldProps = {
   label: string;
   value: string;
   placeholder?: string;
   onChange: (value: string) => void;
-}) {
+};
+
+function TextFieldImpl({ label, value, placeholder, onChange }: TextFieldProps) {
   return (
     <div className="grid grid-cols-[120px_1fr] items-center gap-3 rounded-md px-2 py-1.5 hover:bg-melt-surface/20">
       <label className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
@@ -329,6 +396,8 @@ export function TextField({
     </div>
   );
 }
+
+export const TextField = memoField<TextFieldProps>(TextFieldImpl);
 
 // ---------------------------------------------------------------------------
 // Buttons + status
@@ -452,19 +521,15 @@ export function ColorStrip({ colors }: { colors: number[] }) {
 }
 
 // Accepts a legacy-compatible NumberInput for anyone who imported it directly.
-export function NumberInput({
-  value,
-  onChange,
-  min,
-  max,
-  step,
-}: {
+type NumberInputProps = {
   value: string;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
   min?: number;
   max?: number;
   step?: number;
-}) {
+};
+
+function NumberInputImpl({ value, onChange, min, max, step }: NumberInputProps) {
   return (
     <input
       className="h-8 rounded border border-melt-text-muted/15 bg-melt-frame/60 px-2 text-right font-mono text-[11px] text-melt-text-heading outline-none focus:border-melt-accent/50"
@@ -477,6 +542,8 @@ export function NumberInput({
     />
   );
 }
+
+export const NumberInput = memoField<NumberInputProps>(NumberInputImpl);
 
 function defaultNumberFormat(value: number): string {
   if (Number.isInteger(value)) return String(value);
