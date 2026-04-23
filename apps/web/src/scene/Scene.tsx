@@ -1,21 +1,34 @@
-import { Billboard, Stars, Stats } from '@react-three/drei';
+import { Stars, Stats } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Bloom, EffectComposer } from '@react-three/postprocessing';
+import {
+  EffectComposer,
+  Select,
+  Selection,
+  SelectiveBloom,
+  ToneMapping,
+} from '@react-three/postprocessing';
+import { ToneMappingMode } from 'postprocessing';
 import { useEffect, useMemo, useRef } from 'react';
 import {
   ACESFilmicToneMapping,
   CatmullRomCurve3,
+  DoubleSide,
   Group,
+  HalfFloatType,
+  Mesh,
+  NoToneMapping,
+  Vector3,
 } from 'three';
 import { SOCKET_THEMES, THEMES, WIRE_THEMES, type Config } from '@melty/shared';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 import { BillboardBulbs } from './BillboardBulbs.tsx';
-import { Bulb } from './Bulb.tsx';
 import { SnowField } from './SnowField.tsx';
 import { bulbTLocations } from './utils.ts';
 import { generateBasePoints } from './wire/basePoints.ts';
+import { allocateRibbonBuffers, writeRibbonPositions } from './wire/buildRibbonGeometry.ts';
 import { segmentCountForQuality } from './wire/buildTubeGeometry.ts';
 import { TwistedCurve } from './wire/TwistedCurve.ts';
+import { AlphaLift } from './effects/AlphaLift.tsx';
 
 const BACKGROUND_COLOR = '#08111d';
 
@@ -39,7 +52,12 @@ export function Scene() {
       }}
       onCreated={({ gl }) => {
         gl.setClearColor(0x000000, 0);
-        gl.toneMapping = ACESFilmicToneMapping;
+        // When PostFX is active, the composer does tone mapping via the
+        // dedicated ToneMapping pass so we keep the base renderer in linear
+        // space (NoToneMapping) to avoid double-mapping the HDR values that
+        // feed into Bloom. The renderer's own tone mapping is only used when
+        // PostFX is disabled, so we flip this in SceneContent as needed.
+        gl.toneMapping = NoToneMapping;
         gl.toneMappingExposure = 1.2;
       }}
     >
@@ -49,10 +67,20 @@ export function Scene() {
 }
 
 function SceneContent({ config }: { config: Config }) {
-  const isBillboardQuality = config.QUALITY === 'billboard';
   const activeTheme = THEMES[config.ACTIVE_THEME];
   const wireTheme = WIRE_THEMES[config.WIRE_THEME];
   const swayGroupRef = useRef<Group>(null);
+  const { gl } = useThree();
+
+  // Keep renderer tone mapping in sync with the PostFX toggle. With PostFX on,
+  // the composer applies tone mapping after Bloom has worked on linear HDR
+  // values — so the renderer must stay in NoToneMapping to avoid mapping
+  // twice (which collapsed the scene to near-black whenever the opaque
+  // background was off). With PostFX off, the renderer itself handles it.
+  useEffect(() => {
+    gl.toneMapping = config.POSTFX_ENABLED ? NoToneMapping : ACESFilmicToneMapping;
+    gl.toneMappingExposure = 1.2;
+  }, [gl, config.POSTFX_ENABLED]);
 
   const basePoints = useMemo(
     () => generateBasePoints(config.NUM_PINS, config.SAG_AMPLITUDE, config.TENSION),
@@ -88,7 +116,7 @@ function SceneContent({ config }: { config: Config }) {
       evenLocations,
       oddLocations,
       config.BULB_SCALE,
-      isBillboardQuality,
+      true,
     ),
     [
       baseCurve,
@@ -96,7 +124,6 @@ function SceneContent({ config }: { config: Config }) {
       config.WIRE_SEPARATION,
       config.WIRE_TWISTS,
       evenLocations,
-      isBillboardQuality,
       oddLocations,
     ],
   );
@@ -110,7 +137,7 @@ function SceneContent({ config }: { config: Config }) {
       oddLocations,
       evenLocations,
       config.BULB_SCALE,
-      isBillboardQuality,
+      true,
     ),
     [
       baseCurve,
@@ -118,17 +145,13 @@ function SceneContent({ config }: { config: Config }) {
       config.WIRE_SEPARATION,
       config.WIRE_TWISTS,
       evenLocations,
-      isBillboardQuality,
       oddLocations,
     ],
   );
 
   const bulbData = useMemo(() => (
     locations.map((t, index) => {
-      const attachedCurve = index % 2 === 0 ? wireA : wireB;
-      const point = isBillboardQuality
-        ? baseCurve.getPoint(t)
-        : attachedCurve.getPoint(t);
+      const point = baseCurve.getPoint(t);
       const socketColorHex = config.SOCKET_THEME === 'WIRE_MATCH'
         ? (index % 2 === 0 ? wireTheme.A : wireTheme.B)
         : (SOCKET_THEMES[config.SOCKET_THEME] ?? wireTheme.A);
@@ -139,11 +162,8 @@ function SceneContent({ config }: { config: Config }) {
         socketColorHex,
       };
     })
-  ), [activeTheme.bulbs, baseCurve, config.SOCKET_THEME, isBillboardQuality, locations, wireA, wireB, wireTheme.A, wireTheme.B]);
+  ), [activeTheme.bulbs, baseCurve, config.SOCKET_THEME, locations, wireTheme.A, wireTheme.B]);
 
-  const radialSegments = isBillboardQuality
-    ? (config.BILLBOARD_DEBUG_HIGH_WIRE ? 5 : 2)
-    : 8;
   const segmentCount = segmentCountForQuality(config.QUALITY, config.WIRE_TWISTS);
 
   useFrame(({ clock }) => {
@@ -161,9 +181,9 @@ function SceneContent({ config }: { config: Config }) {
       <CameraPose config={config} />
 
       <ambientLight intensity={config.AMBIENT_INTENSITY} />
-      <directionalLight intensity={1.2} position={[0, 12, 12]} />
-      <directionalLight intensity={0.42} position={[0, 4, -12]} />
-      <hemisphereLight args={['#eef5ff', '#0a0a12', 0.35]} />
+      <directionalLight intensity={config.KEY_LIGHT_INTENSITY} position={[0, 12, 12]} />
+      <directionalLight intensity={config.FILL_LIGHT_INTENSITY} position={[0, 4, -12]} />
+      <hemisphereLight args={['#eef5ff', '#0a0a12', config.HEMI_LIGHT_INTENSITY]} />
 
       {config.STARS_ENABLED ? (
         <Stars
@@ -186,65 +206,81 @@ function SceneContent({ config }: { config: Config }) {
         />
       ) : null}
 
-      <group ref={swayGroupRef}>
-        <WireMesh
-          color={wireTheme.A}
-          curve={wireA}
-          radialSegments={radialSegments}
-          segments={segmentCount}
-          thickness={config.WIRE_THICKNESS}
-          transparent={isBillboardQuality}
-        />
-        <WireMesh
-          color={wireTheme.B}
-          curve={wireB}
-          radialSegments={radialSegments}
-          segments={segmentCount}
-          thickness={config.WIRE_THICKNESS}
-          transparent={isBillboardQuality}
-        />
-
-        {isBillboardQuality ? (
-          <BillboardBulbs bulbs={bulbData} config={config} themePalette={activeTheme.bulbs} />
-        ) : (
-          bulbData.map((bulb, index) => (
-            <Bulb
-              key={`${index}-${bulb.baseColorHex}-${bulb.position.join(':')}`}
-              baseColorHex={bulb.baseColorHex}
-              config={config}
-              index={index}
-              position={bulb.position}
-              scale={config.BULB_SCALE}
-              socketColorHex={bulb.socketColorHex}
-              themePalette={activeTheme.bulbs}
-              total={bulbData.length}
-            />
-          ))
-        )}
-      </group>
-
-      {config.POSTFX_ENABLED ? (
-        <EffectComposer multisampling={0}>
-          <Bloom
-            luminanceThreshold={config.BLOOM_THRESHOLD}
-            mipmapBlur
-            intensity={config.BLOOM_STRENGTH * Math.max(0.35, config.BLOOM_INTENSITY)}
-            radius={config.BLOOM_RADIUS}
+      {/* Selection wraps the scene + composer so <SelectiveBloom> can isolate
+          bulb emissives from the wire. Without this, threshold-based bloom
+          on a single composer reads the whole HDR scene and the lit wire
+          (ambient + directional + hemi light contributions) sails past the
+          threshold, producing the "whole scene glows / PostFX washes out"
+          look that doesn't match the legacy's triple-scene bloom. */}
+      <Selection>
+        <group ref={swayGroupRef}>
+          <WireRibbon
+            color={wireTheme.A}
+            curve={wireA}
+            segments={segmentCount}
+            thickness={config.WIRE_THICKNESS}
           />
-        </EffectComposer>
-      ) : null}
+          <WireRibbon
+            color={wireTheme.B}
+            curve={wireB}
+            segments={segmentCount}
+            thickness={config.WIRE_THICKNESS}
+          />
+
+          <Select enabled>
+            <BillboardBulbs bulbs={bulbData} config={config} themePalette={activeTheme.bulbs} />
+          </Select>
+        </group>
+
+        {config.POSTFX_ENABLED ? (
+          <EffectComposer
+            multisampling={config.ANTIALIAS_ENABLED ? 8 : 0}
+            frameBufferType={HalfFloatType}
+          >
+            <SelectiveBloom
+              luminanceThreshold={config.BLOOM_THRESHOLD}
+              mipmapBlur
+              intensity={config.BLOOM_STRENGTH * Math.max(0.35, config.BLOOM_INTENSITY)}
+              radius={config.BLOOM_RADIUS}
+            />
+            {/*
+              AGX tone mapping preserves hue at high intensity — ACES Filmic
+              was collapsing saturated emissive bulbs (vColor * 6+) toward
+              white and spreading that white through bloom.
+            */}
+            <ToneMapping mode={ToneMappingMode.AGX} />
+            {/*
+              AlphaLift: lift alpha to match final luminance so the bloom
+              halo survives composition on a transparent canvas. Only needed
+              when the opaque background is off. EffectComposer's children
+              type doesn't accept `null`, so swap in an empty fragment.
+            */}
+            {!config.BACKGROUND_ENABLED ? <AlphaLift strength={1.0} /> : <></>}
+          </EffectComposer>
+        ) : null}
+      </Selection>
 
       {config.STATS_ENABLED ? <Stats className="!left-4 !top-4" /> : null}
     </>
   );
 }
 
+// Fixed world-space look direction for the scene camera. Derived from the
+// original default pose (eye (0,-3,15) → target (0,1.8,0)) so the initial
+// framing matches what the user is used to: a gentle upward tilt toward the
+// light string. Keeping this vector constant means every camera slider is
+// pure translation — pan, height, and zoom never change the camera's
+// orientation, so the scene can't "rotate on the Z axis" as you zoom.
+const CAMERA_FORWARD = new Vector3(0, 4.8, -15).normalize();
+const _cameraTarget = new Vector3();
+
 function CameraPose({ config }: { config: Config }) {
   const { camera } = useThree();
 
   useEffect(() => {
     camera.position.set(config.CAMERA_X, config.CAMERA_HEIGHT, config.CAMERA_DISTANCE);
-    camera.lookAt(config.CAMERA_X * 0.1, 1.8, 0);
+    _cameraTarget.copy(camera.position).addScaledVector(CAMERA_FORWARD, 10);
+    camera.lookAt(_cameraTarget);
     camera.updateProjectionMatrix();
   }, [
     camera,
@@ -256,32 +292,42 @@ function CameraPose({ config }: { config: Config }) {
   return null;
 }
 
-function WireMesh({
+function WireRibbon({
   color,
   curve,
-  radialSegments,
   segments,
   thickness,
-  transparent,
 }: {
   color: number;
   curve: TwistedCurve;
-  radialSegments: number;
   segments: number;
   thickness: number;
-  transparent: boolean;
 }) {
+  const meshRef = useRef<Mesh>(null);
   const colorValue = `#${color.toString(16).padStart(6, '0')}`;
 
+  const buffers = useMemo(() => allocateRibbonBuffers(segments), [segments]);
+
+  useEffect(() => {
+    writeRibbonPositions(buffers, curve, thickness);
+  }, [buffers, curve, thickness]);
+
+  useEffect(() => {
+    const geometry = buffers.geometry;
+    return () => {
+      geometry.dispose();
+    };
+  }, [buffers]);
+
   return (
-    <mesh renderOrder={transparent ? 1 : 0}>
-      <tubeGeometry args={[curve, segments, thickness, radialSegments, false]} />
+    <mesh ref={meshRef} geometry={buffers.geometry} renderOrder={1}>
       <meshStandardMaterial
         color={colorValue}
-        metalness={transparent ? 0.22 : 0.4}
-        roughness={transparent ? 0.62 : 0.38}
-        transparent={transparent}
-        opacity={transparent ? 0.92 : 1}
+        metalness={0.22}
+        roughness={0.62}
+        side={DoubleSide}
+        transparent
+        opacity={0.92}
       />
     </mesh>
   );

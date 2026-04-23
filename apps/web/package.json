@@ -10,14 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@melty/shared": "workspace:*",
     "@gsap/react": "latest",
+    "@melty/shared": "workspace:*",
     "@react-three/drei": "latest",
     "@react-three/fiber": "latest",
     "@react-three/postprocessing": "latest",
     "clsx": "^2.1.1",
     "gsap": "latest",
     "lucide-react": "^0.468.0",
+    "postprocessing": "^6.39.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.0.0",

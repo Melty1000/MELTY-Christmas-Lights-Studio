@@ -1,5 +1,6 @@
 import {
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -10,12 +11,11 @@ import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import {
   Lightbulb,
-  Cable,
-  Sparkles,
-  CloudSnow,
-  BookmarkIcon,
+  Heart,
   Settings as SettingsIcon,
   ExternalLink,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
@@ -30,46 +30,22 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: 'Bulbs', icon: Lightbulb, end: true },
-  { to: '/wires', label: 'Wires', icon: Cable },
-  { to: '/effects', label: 'Effects', icon: Sparkles },
-  { to: '/environment', label: 'Environment', icon: CloudSnow },
-  { to: '/presets', label: 'Presets', icon: BookmarkIcon },
+  { to: '/', label: 'Studio', icon: Lightbulb, end: true },
+  { to: '/support', label: 'Support', icon: Heart },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];
 
-const PAGE_META: Record<string, { title: string; subtitle: string[]; topbar: string }> = {
-  '/': {
-    title: 'Bulb Palette + Glass',
-    subtitle: ['Theme', 'Socket', 'Emissive'],
-    topbar: 'Bulbs',
-  },
-  '/wires': {
-    title: 'Wire Geometry + Layout',
-    subtitle: ['Sag', 'Spacing', 'Twist'],
-    topbar: 'Wires',
-  },
-  '/effects': {
-    title: 'Motion + Glow Pass',
-    subtitle: ['Twinkle', 'Speed', 'Bloom'],
-    topbar: 'Effects',
-  },
-  '/environment': {
-    title: 'Scene + Camera Tuning',
-    subtitle: ['Snow', 'Stars', 'Framing'],
-    topbar: 'Environment',
-  },
-  '/presets': {
-    title: 'Preset Library + I/O',
-    subtitle: ['Apply', 'Update', 'Export'],
-    topbar: 'Presets',
-  },
-  '/settings': {
-    title: 'Runtime + Distribution',
-    subtitle: ['Overlay', 'Quality', 'Status'],
-    topbar: 'Settings',
-  },
+const PAGE_META: Record<string, { topbar: string }> = {
+  '/': { topbar: 'Studio' },
+  '/support': { topbar: 'Support' },
+  '/settings': { topbar: 'Settings' },
 };
+
+const PREVIEW_WIDTH_KEY = 'melty.previewWidth';
+const PREVIEW_VISIBLE_KEY = 'melty.previewVisible';
+const PREVIEW_MIN_WIDTH = 280;
+const PREVIEW_MAX_WIDTH = 900;
+const PREVIEW_DEFAULT_WIDTH = 480;
 
 const SIDEBAR_COLLAPSED = '64px';
 const SIDEBAR_EXPANDED = '142px';
@@ -98,6 +74,68 @@ export function MeltShell({ children }: MeltShellProps) {
   const expandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
   const sidebarTimelineRef = useRef<gsap.core.Timeline | null>(null);
+
+  const [previewVisible, setPreviewVisible] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const stored = window.localStorage.getItem(PREVIEW_VISIBLE_KEY);
+    return stored === null ? true : stored === '1';
+  });
+  const [previewWidth, setPreviewWidth] = useState(() => {
+    if (typeof window === 'undefined') return PREVIEW_DEFAULT_WIDTH;
+    const stored = Number(window.localStorage.getItem(PREVIEW_WIDTH_KEY));
+    if (!Number.isFinite(stored) || stored <= 0) return PREVIEW_DEFAULT_WIDTH;
+    return Math.min(PREVIEW_MAX_WIDTH, Math.max(PREVIEW_MIN_WIDTH, stored));
+  });
+  const [isResizing, setIsResizing] = useState(false);
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(PREVIEW_VISIBLE_KEY, previewVisible ? '1' : '0');
+  }, [previewVisible]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(PREVIEW_WIDTH_KEY, String(previewWidth));
+  }, [previewWidth]);
+
+  const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    // Capture the pointer on the handle element. This guarantees we keep
+    // receiving pointermove/up events even if the cursor crosses into the
+    // iframe (which otherwise eats the events because it's a separate
+    // document and the browser hands pointer focus to it).
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    draggingRef.current = true;
+    setIsResizing(true);
+
+    const onMove = (e: PointerEvent) => {
+      if (!draggingRef.current) return;
+      const viewport = window.innerWidth;
+      const next = Math.min(
+        PREVIEW_MAX_WIDTH,
+        Math.max(PREVIEW_MIN_WIDTH, viewport - e.clientX),
+      );
+      setPreviewWidth(next);
+    };
+    const onUp = (e: PointerEvent) => {
+      draggingRef.current = false;
+      setIsResizing(false);
+      handle.releasePointerCapture(e.pointerId);
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  }, []);
 
   const activeKey = useMemo(() => {
     const exact = NAV_ITEMS.find((item) =>
@@ -166,11 +204,7 @@ export function MeltShell({ children }: MeltShellProps) {
     timeline.timeScale(SIDEBAR_UNHOVER_SPEED).reverse();
   }, [expanded]);
 
-  const page = PAGE_META[activeKey] ?? {
-    title: 'Command Surface',
-    subtitle: ['Control', 'Sync', 'Overlay'],
-    topbar: 'Command',
-  };
+  const page = PAGE_META[activeKey] ?? { topbar: 'Command' };
   const activeIndex = NAV_ITEMS.findIndex((item) => item.to === activeKey);
   const apiTone =
     connection === 'connected' ? 'good' : connection === 'connecting' ? 'warn' : 'neutral';
@@ -301,6 +335,15 @@ export function MeltShell({ children }: MeltShellProps) {
           />
           <button
             type="button"
+            onClick={() => setPreviewVisible((prev) => !prev)}
+            title={previewVisible ? 'Hide live preview' : 'Show live preview'}
+            className="flex h-8 items-center gap-2 rounded-full border border-melt-text-muted/10 bg-melt-surface/30 px-3 text-[9px] font-black tracking-[0.24em] uppercase text-melt-text-label transition-colors duration-200 hover:border-melt-accent/30 hover:text-melt-text-heading"
+          >
+            {previewVisible ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+            <span className="hidden md:inline">{previewVisible ? 'Hide Preview' : 'Show Preview'}</span>
+          </button>
+          <button
+            type="button"
             onClick={() => window.open('/overlay', '_blank', 'noopener,noreferrer')}
             className="flex h-8 items-center gap-2 rounded-full border border-melt-text-muted/10 bg-melt-surface/30 px-4 text-[9px] font-black tracking-[0.24em] uppercase text-melt-text-label transition-colors duration-200 hover:border-melt-accent/30 hover:text-melt-text-heading"
           >
@@ -311,15 +354,88 @@ export function MeltShell({ children }: MeltShellProps) {
       </header>
 
       <main
-        className="col-start-2 row-start-2 flex min-w-[calc(100vw-64px)] flex-col overflow-hidden rounded-tl-[32px] bg-melt-surface shadow-[0_0_0_1px_rgba(255,255,255,0.01)]"
+        className="col-start-2 row-start-2 flex min-w-[calc(100vw-64px)] overflow-hidden rounded-tl-[32px] bg-melt-surface shadow-[0_0_0_1px_rgba(255,255,255,0.01)]"
         style={{ marginLeft: 'calc(var(--sidebar-width) - 64px)' }}
       >
-        <PageHeader title={page.title} subtitle={page.subtitle} />
-        <div className="relative flex-1 overflow-y-auto overflow-x-hidden px-10 pb-10 pt-6">
-          {children}
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <PageHeader title={page.topbar} />
+          <div className="relative flex-1 overflow-y-auto overflow-x-hidden px-6 pb-8 pt-4">
+            {children}
+          </div>
         </div>
+
+        {previewVisible ? (
+          <>
+            <div
+              onPointerDown={handleResizeStart}
+              className={clsx(
+                'group relative w-1 shrink-0 touch-none cursor-col-resize transition-colors',
+                isResizing
+                  ? 'bg-melt-accent/60'
+                  : 'bg-melt-text-muted/5 hover:bg-melt-accent/40',
+              )}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize preview"
+            >
+              {/* Invisible hit target that extends the handle on both sides so
+                  users don't need pixel-perfect aim. */}
+              <div className="absolute inset-y-0 -left-2 -right-2" />
+            </div>
+            <PreviewPane width={previewWidth} suppressPointer={isResizing} />
+          </>
+        ) : null}
       </main>
     </div>
+  );
+}
+
+function PreviewPane({
+  width,
+  suppressPointer,
+}: {
+  width: number;
+  suppressPointer: boolean;
+}) {
+  return (
+    <aside
+      className="flex shrink-0 flex-col border-l border-melt-text-muted/10 bg-melt-frame/50"
+      style={{ width }}
+    >
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-melt-text-muted/10 px-3">
+        <div className="flex items-center gap-2">
+          <span className="size-1.5 rounded-full bg-emerald-400/80 shadow-[0_0_8px] shadow-emerald-400/60" />
+          <span className="text-[9px] font-black tracking-[0.22em] uppercase text-melt-text-muted">
+            Live Preview
+          </span>
+        </div>
+        <a
+          href="/overlay"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex h-6 items-center gap-1 rounded border border-melt-text-muted/10 px-2 text-[9px] font-black tracking-[0.18em] uppercase text-melt-text-label transition-colors hover:border-melt-accent/40 hover:text-melt-accent"
+          title="Pop out overlay"
+        >
+          <ExternalLink className="size-3" />
+          Pop Out
+        </a>
+      </div>
+      <div className="relative flex-1 overflow-hidden bg-[#05090f]">
+        <iframe
+          title="Overlay preview"
+          src="/overlay"
+          className="size-full border-0"
+          allow="autoplay"
+        />
+        {/* During a resize drag we cover the iframe with a transparent shield
+            so the cursor never slips into the sub-document and steals the
+            pointer stream — otherwise the parent stops receiving
+            pointermove events as soon as you cross the handle rightward. */}
+        {suppressPointer ? (
+          <div className="absolute inset-0 cursor-col-resize" aria-hidden />
+        ) : null}
+      </div>
+    </aside>
   );
 }
 
@@ -377,22 +493,11 @@ function SidebarNavItem({
   );
 }
 
-function PageHeader({ title, subtitle }: { title: string; subtitle: string[] }) {
+function PageHeader({ title }: { title: string }) {
   return (
-    <header className="flex shrink-0 items-center gap-4 px-10 pt-8 pb-4">
-      <div className="h-px flex-1 bg-melt-text-muted/10" />
-      <div className="flex flex-col items-center justify-center gap-2">
-        <div className="text-xs font-bold tracking-[0.2em] uppercase text-melt-text-body opacity-80">
-          {title}
-        </div>
-        <div className="flex items-center gap-3 text-[11px] font-bold tracking-[0.3em] uppercase text-melt-text-label">
-          {subtitle.map((item, index) => (
-            <span key={`${item}-${index}`} className="flex items-center gap-3">
-              {index > 0 ? <span className="opacity-45">|</span> : null}
-              <span>{item}</span>
-            </span>
-          ))}
-        </div>
+    <header className="flex shrink-0 items-center gap-4 px-6 pt-4 pb-2">
+      <div className="text-[11px] font-black tracking-[0.28em] uppercase text-melt-text-heading">
+        {title}
       </div>
       <div className="h-px flex-1 bg-melt-text-muted/10" />
     </header>

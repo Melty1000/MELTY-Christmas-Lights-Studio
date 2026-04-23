@@ -68,6 +68,9 @@
     font-feature-settings: "cv11", "ss01";
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
+    /* Tell the UA to paint native popups (e.g. <select> option lists) with
+       our dark palette so the dropdown panel matches the control panel. */
+    color-scheme: dark;
   }
 
   * {
@@ -79,6 +82,18 @@
   button,
   textarea {
     color: inherit;
+  }
+
+  /* Native <option> panel styling (best-effort — browsers vary, but this
+     pushes Chromium and Edge to our palette instead of system blue). */
+  select option {
+    background-color: var(--melt-frame);
+    color: var(--melt-text-heading);
+  }
+
+  select option:checked {
+    background-color: color-mix(in srgb, var(--melt-accent) 24%, var(--melt-frame));
+    color: var(--melt-text-heading);
   }
 
   ::selection {

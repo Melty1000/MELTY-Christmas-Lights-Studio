@@ -52,6 +52,9 @@ export const configSchema = z.object({
   WIRE_TWISTS: z.number().min(0).max(1000).default(215),
 
   AMBIENT_INTENSITY: z.number().min(0).max(5).default(1),
+  KEY_LIGHT_INTENSITY: z.number().min(0).max(5).default(1.2),
+  FILL_LIGHT_INTENSITY: z.number().min(0).max(5).default(0.42),
+  HEMI_LIGHT_INTENSITY: z.number().min(0).max(5).default(0.35),
 
   POSTFX_ENABLED: z.boolean().default(true),
   BLOOM_STRENGTH: z.number().min(0).max(5).default(0.4),

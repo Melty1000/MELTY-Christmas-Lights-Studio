@@ -7,10 +7,12 @@ import {
   InstancedBufferAttribute,
   InstancedMesh,
   Object3D,
+  PointLight,
   Quaternion,
   ShaderMaterial,
   Shape,
   ShapeGeometry,
+  Vector3,
 } from 'three';
 import type { Config } from '@melty/shared';
 import { createBulbAnimationState, stepBulbAnimation, type BulbAnimationState } from './animation.ts';
@@ -42,15 +44,52 @@ interface BillboardInstanceOffset {
 const _glassDummy = new Object3D();
 const _filamentDummy = new Object3D();
 const _socketDummy = new Object3D();
-const _identityQuaternion = new Quaternion();
+const _billboardQuaternion = new Quaternion();
+const _offsetVec = new Vector3();
 const _animatedColor = new Color();
 const _socketColor = new Color();
 const _filamentColor = new Color();
 
+// ---------------------------------------------------------------------------
+// "Reflections" (per-bulb point lights)
+// ---------------------------------------------------------------------------
+// In the legacy app this feature was labeled "Reflections" in the UI — the
+// POINT_LIGHTS_ENABLED toggle drives colored per-bulb point lights that spill
+// onto the MeshStandardMaterial wire ribbon, which is the only PBR surface in
+// the scene (the glass/socket/filament are custom shaders that don't sample
+// Three.js lights). Tuning notes below reflect the constraints of this scene
+// specifically — not generic point light physics.
+
+// Three.js compiles point lights into the shader program at the declared
+// maximum count, and large counts blow out uniform budgets / mobile tiled
+// renderers. 80 is a safe cap that still gives dense strands noticeable spill.
+const MAX_POINT_LIGHTS = 80;
+
+// Three.js has been physically-correct-by-default since r155 (intensity is in
+// candela). A Christmas-bulb-sized emitter at ~0.2m glass reads around
+// 30-40cd. We then multiply by per-bulb animation.intensity (0..1) so dim
+// bulbs cast less spill. Anything much higher blows the bloom threshold and
+// the wire turns into a solid glowing sausage.
+const POINT_LIGHT_INTENSITY = 32;
+
+// Distance is a hard cutoff — we want each bulb's spill to land on the wire
+// section immediately around it but NOT reach past the neighboring bulb (or
+// the wire becomes a uniform smear with no color separation). With ~0.6 world
+// units between bulbs, 0.9 lets neighbors overlap slightly without washing.
+const POINT_LIGHT_DISTANCE = 0.9;
+const POINT_LIGHT_DECAY = 2;
+
+// Vertical offset from the bulb's attachment point (socket/wire junction) up
+// into the glass body. Placing the light here, rather than at the exact wire
+// position, pushes the brightest spill DOWN onto the wire so the effect is
+// visible from the usual viewing angle instead of being hidden inside the
+// wire geometry. ~0.3 in legacy local space; here we scale with BULB_SCALE.
+const POINT_LIGHT_VERTICAL_OFFSET = 0.3;
+
 const BILLBOARD_OFFSETS = {
-  filament: { y: -2.2, z: -0.02 } satisfies BillboardInstanceOffset,
-  glass: { y: -1.4, z: -0.02 } satisfies BillboardInstanceOffset,
-  socket: { y: -1.75, z: -0.018 } satisfies BillboardInstanceOffset,
+  filament: { y: -2.2, z: 0.04 } satisfies BillboardInstanceOffset,
+  glass: { y: -1.4, z: 0.05 } satisfies BillboardInstanceOffset,
+  socket: { y: -1.75, z: 0.06 } satisfies BillboardInstanceOffset,
 } as const;
 
 export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsProps) {
@@ -58,10 +97,15 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
   const filamentRef = useRef<InstancedMesh>(null);
   const socketRef = useRef<InstancedMesh>(null);
   const animationStatesRef = useRef<BulbAnimationState[]>([]);
+  const pointLightRefs = useRef<Array<PointLight | null>>([]);
   const geometries = useMemo(createBillboardGeometries, []);
   const glassMaterial = useMemo(createGlassMaterial, []);
   const filamentMaterial = useMemo(createFilamentMaterial, []);
   const socketMaterial = useMemo(createSocketMaterial, []);
+
+  const pointLightCount = config.POINT_LIGHTS_ENABLED
+    ? Math.min(bulbs.length, MAX_POINT_LIGHTS)
+    : 0;
 
   useEffect(() => {
     animationStatesRef.current = bulbs.map((_, index) => animationStatesRef.current[index] ?? createBulbAnimationState(index));
@@ -84,7 +128,7 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
     socket.geometry.setAttribute('instanceColor', new InstancedBufferAttribute(new Float32Array(bulbs.length * 3), 3));
   }, [bulbs.length]);
 
-  useFrame(({ clock }, delta) => {
+  useFrame(({ camera, clock }, delta) => {
     const glass = glassRef.current;
     const filament = filamentRef.current;
     const socket = socketRef.current;
@@ -95,6 +139,8 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
     const filamentColorAttr = filament.geometry.getAttribute('instanceColor') as InstancedBufferAttribute;
     const filamentEmissiveAttr = filament.geometry.getAttribute('instanceEmissive') as InstancedBufferAttribute;
     const socketColorAttr = socket.geometry.getAttribute('instanceColor') as InstancedBufferAttribute;
+
+    _billboardQuaternion.copy(camera.quaternion);
 
     const elapsed = clock.getElapsedTime();
     for (let index = 0; index < bulbs.length; index++) {
@@ -120,7 +166,7 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
         glass,
         index,
         _glassDummy,
-        _identityQuaternion,
+        _billboardQuaternion,
         x,
         y,
         z,
@@ -131,7 +177,7 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
         filament,
         index,
         _filamentDummy,
-        _identityQuaternion,
+        _billboardQuaternion,
         x,
         y,
         z,
@@ -142,7 +188,7 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
         socket,
         index,
         _socketDummy,
-        _identityQuaternion,
+        _billboardQuaternion,
         x,
         y,
         z,
@@ -161,6 +207,23 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
       filamentEmissiveAttr.setX(index, animation.intensity);
 
       socketColorAttr.setXYZ(index, _socketColor.r, _socketColor.g, _socketColor.b);
+
+      // Drive the optional per-bulb point light for colored spill onto the
+      // wire ribbon. Capped earlier via pointLightCount. The light's y is
+      // lifted above the attachment point each frame in case BULB_SCALE
+      // changed — keeps the brightest spill aimed DOWN onto the wire.
+      if (index < pointLightCount) {
+        const light = pointLightRefs.current[index];
+        if (light) {
+          light.color.setHex(animation.colorHex);
+          light.intensity = POINT_LIGHT_INTENSITY * animation.intensity;
+          light.position.set(
+            x,
+            y + POINT_LIGHT_VERTICAL_OFFSET * config.BULB_SCALE,
+            z,
+          );
+        }
+      }
     }
 
     glass.instanceMatrix.needsUpdate = true;
@@ -174,6 +237,8 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
 
     (glassMaterial.uniforms.baseOpacity!).value = config.GLASS_OPACITY;
     (glassMaterial.uniforms.baseEmissiveIntensity!).value = config.EMISSIVE_INTENSITY;
+    (glassMaterial.uniforms.uAmbient!).value = config.AMBIENT_INTENSITY;
+    (socketMaterial.uniforms.uAmbient!).value = config.AMBIENT_INTENSITY;
   });
 
   useEffect(() => {
@@ -192,6 +257,29 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
       <instancedMesh ref={socketRef} args={[geometries.socket, socketMaterial, bulbs.length]} renderOrder={0} />
       <instancedMesh ref={glassRef} args={[geometries.glass, glassMaterial, bulbs.length]} renderOrder={10} />
       <instancedMesh ref={filamentRef} args={[geometries.filament, filamentMaterial, bulbs.length]} renderOrder={11} />
+      {pointLightCount > 0
+        ? bulbs.slice(0, pointLightCount).map((bulb, index) => (
+            <pointLight
+              key={`pl-${index}`}
+              ref={(light) => {
+                pointLightRefs.current[index] = light;
+              }}
+              // Initial position gets overwritten every frame in useFrame to
+              // track BULB_SCALE, but we seed it above the attachment point
+              // so the very first frame doesn't render the light sunk into
+              // the wire.
+              position={[
+                bulb.position[0],
+                bulb.position[1] + POINT_LIGHT_VERTICAL_OFFSET * config.BULB_SCALE,
+                bulb.position[2],
+              ]}
+              distance={POINT_LIGHT_DISTANCE}
+              decay={POINT_LIGHT_DECAY}
+              intensity={0}
+              color={bulb.baseColorHex}
+            />
+          ))
+        : null}
     </group>
   );
 }
@@ -207,7 +295,9 @@ function writeInstance(
   scale: number,
   offset: BillboardInstanceOffset,
 ) {
-  dummy.position.set(x, y + (offset.y * scale), z + offset.z);
+  _offsetVec.set(0, offset.y * scale, offset.z);
+  _offsetVec.applyQuaternion(cameraQuaternion);
+  dummy.position.set(x + _offsetVec.x, y + _offsetVec.y, z + _offsetVec.z);
   dummy.quaternion.copy(cameraQuaternion);
   dummy.scale.setScalar(scale);
   dummy.updateMatrix();
@@ -264,6 +354,12 @@ function createGlassMaterial(): ShaderMaterial {
     uniforms: {
       baseOpacity: { value: 0.15 },
       baseEmissiveIntensity: { value: 9 },
+      // Baseline brightness of the glass dome ("fake ambient"). The custom
+      // shader doesn't sample the Three.js lighting uniforms, so we inject
+      // the scene's AMBIENT_INTENSITY explicitly — otherwise the ambient
+      // slider only ever changed the wire and the bulbs looked detached
+      // from the rest of the scene's lighting.
+      uAmbient: { value: 1.0 },
     },
     vertexShader: `
       attribute vec3 instanceColor;
@@ -288,6 +384,7 @@ function createGlassMaterial(): ShaderMaterial {
     fragmentShader: `
       uniform float baseOpacity;
       uniform float baseEmissiveIntensity;
+      uniform float uAmbient;
 
       varying vec3 vColor;
       varying float vEmissive;
@@ -309,7 +406,7 @@ function createGlassMaterial(): ShaderMaterial {
         float highlight = pow(NdotV, 1.5);
         float rim = pow(1.0 - NdotV, 2.0) * 0.5;
         float topLight = max(0.0, dot(domeNormal, normalize(vec3(0.0, 0.5, 1.0))));
-        float lighting = 0.3 + topLight * 0.4 + highlight * 0.6;
+        float lighting = uAmbient * 0.3 + topLight * 0.4 + highlight * 0.6;
 
         vec3 emissiveColor = vColor * vEmissive * baseEmissiveIntensity;
         vec3 finalColor = vColor * lighting * 0.5 + emissiveColor;
@@ -362,7 +459,11 @@ function createFilamentMaterial(): ShaderMaterial {
 
 function createSocketMaterial(): ShaderMaterial {
   return new ShaderMaterial({
-    uniforms: {},
+    uniforms: {
+      // Same ambient injection as the glass shader — otherwise the scene
+      // ambient slider has no visible effect on sockets.
+      uAmbient: { value: 1.0 },
+    },
     vertexShader: `
       attribute vec3 instanceColor;
 
@@ -381,6 +482,8 @@ function createSocketMaterial(): ShaderMaterial {
       }
     `,
     fragmentShader: `
+      uniform float uAmbient;
+
       varying vec3 vColor;
       varying vec3 vLocalPos;
       varying vec3 vViewPos;
@@ -400,7 +503,7 @@ function createSocketMaterial(): ShaderMaterial {
         float NdotV = max(0.0, dot(domeNormal, viewDir));
         float highlight = pow(NdotV, 1.5);
         float topLight = max(0.0, dot(domeNormal, normalize(vec3(0.0, 0.5, 1.0))));
-        float lighting = 0.4 + topLight * 0.3 + highlight * 0.4;
+        float lighting = uAmbient * 0.4 + topLight * 0.3 + highlight * 0.4;
         vec3 finalColor = vColor * lighting;
 
         vec3 reflectDir = reflect(-viewDir, domeNormal);

@@ -5,11 +5,8 @@ import './styles/index.css';
 import { ControlPanel } from './routes/ControlPanel.tsx';
 import { Overlay } from './routes/Overlay.tsx';
 import { loadMeltTheme } from './lib/theme.ts';
-import { Bulbs } from './pages/Bulbs.tsx';
-import { Wires } from './pages/Wires.tsx';
-import { Effects } from './pages/Effects.tsx';
-import { Environment } from './pages/Environment.tsx';
-import { Presets } from './pages/Presets.tsx';
+import { Studio } from './pages/Studio.tsx';
+import { Support } from './pages/Support.tsx';
 import { Settings } from './pages/Settings.tsx';
 
 loadMeltTheme();
@@ -19,11 +16,8 @@ const router = createBrowserRouter([
     path: '/',
     element: <ControlPanel />,
     children: [
-      { index: true, element: <Bulbs /> },
-      { path: 'wires', element: <Wires /> },
-      { path: 'effects', element: <Effects /> },
-      { path: 'environment', element: <Environment /> },
-      { path: 'presets', element: <Presets /> },
+      { index: true, element: <Studio /> },
+      { path: 'support', element: <Support /> },
       { path: 'settings', element: <Settings /> },
     ],
   },
