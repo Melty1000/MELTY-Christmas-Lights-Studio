@@ -93,9 +93,9 @@ export function allocateRibbonBuffers(segments: number): RibbonBuffers {
 const _P = new Vector3();
 const _T = new Vector3();
 
-// Writes curve center positions and per-vertex tangents once per mount /
-// curve change. The shader handles width extrusion every frame from
-// `cameraPosition`, so this never needs to run inside useFrame.
+// Writes curve center positions and per-vertex tangents on mount, when the
+// curve reference changes, or when connect Z tuck updates (thickness). The
+// shader handles width extrusion from `cameraPosition`.
 export function writeRibbonPositions(
   buffers: RibbonBuffers,
   curve: TwistedCurve,

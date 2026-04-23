@@ -42,13 +42,17 @@ export function createWireMaterial(
   // Opposite values on the two draw calls: breaks depth ties where the two
   // theme-colored ribbons intersect without depending on draw order.
   const poSign = strandId === 0 ? 1 : -1;
+  // Whole-strand nudge in the camera-facing ribbon width (perp): pushes the
+  // two theme wires apart in screen space at overlaps where helix + sin(weave)
+  // would still line up. Opposite for A vs B.
+  const strandLateral = strandId === 0 ? -1.0 : 1.0;
 
   return new ShaderMaterial({
-    // WebGL: offset pushes the fragment a hair along the sloped depth — enough
-    // to separate two slightly intersecting quads. Units scale with viewport.
+    // WebGL: larger offset than the first pass — at shallow grazing angles
+    // 0.55/factor 1.0u was still too weak to break ties.
     polygonOffset: true,
-    polygonOffsetFactor: 0.55 * poSign,
-    polygonOffsetUnits: 1.0 * poSign,
+    polygonOffsetFactor: 1.25 * poSign,
+    polygonOffsetUnits: 2.0 * poSign,
     uniforms: {
       uBaseColor: new Uniform(baseColor),
       uTwists: new Uniform(215),
@@ -73,6 +77,38 @@ export function createWireMaterial(
       // viewDir so the two meshes are never bit-identical at crossings even
       // with polygon offset disabled on some drivers.
       uStrandNudge: new Uniform(strandId === 0 ? 0.0 : 1.0),
+      uStrandLateral: new Uniform(strandLateral),
+      // Per-twist view-space offset at full twist frequency (uTwists), in
+      // addition to the slower groove weave. Scales in JS with thin wires.
+      uPerTwistDepth: new Uniform(0.028),
+      // Custom lighting (wire is ShaderMaterial; Three's lights are ignored
+      // unless we sample them like this). Directions are world-space, toward
+      // the light, normalized.
+      uKeyL: new Uniform(new Vector3(0, 0.4, 0.3)),
+      uKeyI: new Uniform(0.0),
+      uFillL: new Uniform(new Vector3(-0.1, 0.3, -0.3)),
+      uFillI: new Uniform(0.0),
+      uHemiSky: new Uniform(new Color('#eef5ff')),
+      uHemignd: new Uniform(new Color('#0a0a12')),
+      uHemiI: new Uniform(0.0),
+      uPPos0: new Uniform(new Vector3()),
+      uPPos1: new Uniform(new Vector3()),
+      uPPos2: new Uniform(new Vector3()),
+      uPPos3: new Uniform(new Vector3()),
+      uPPos4: new Uniform(new Vector3()),
+      uPPos5: new Uniform(new Vector3()),
+      uPPos6: new Uniform(new Vector3()),
+      uPPos7: new Uniform(new Vector3()),
+      uPCol0: new Uniform(new Color(0, 0, 0)),
+      uPCol1: new Uniform(new Color(0, 0, 0)),
+      uPCol2: new Uniform(new Color(0, 0, 0)),
+      uPCol3: new Uniform(new Color(0, 0, 0)),
+      uPCol4: new Uniform(new Color(0, 0, 0)),
+      uPCol5: new Uniform(new Color(0, 0, 0)),
+      uPCol6: new Uniform(new Color(0, 0, 0)),
+      uPCol7: new Uniform(new Color(0, 0, 0)),
+      uPCount: new Uniform(0),
+      uPointRange: new Uniform(0.9),
     },
     vertexShader: /* glsl */ `
       attribute vec3 aTangent;
@@ -84,8 +120,12 @@ export function createWireMaterial(
       uniform float uWeaveDepth;
       uniform vec3 uFallbackPerp;
       uniform float uStrandNudge;
+      uniform float uStrandLateral;
+      uniform float uPerTwistDepth;
 
       varying vec2 vUv;
+      varying vec3 vWorldPos;
+      varying vec3 vPerpW;
 
       const float TAU = 6.28318530717958;
 
@@ -110,27 +150,51 @@ export function createWireMaterial(
         // Width extrusion along camera-aligned perpendicular.
         vec3 offset = perp * aSide * uThickness;
 
+        // Constant shift of the whole ribbon along perp: separates strand A
+        // and B in the *same* plane the slider uses to thicken the cable, so
+        // where two 3D curve segments meet they are not the same sliver in
+        // clip space. Scales with thickness so it stays sub-pixel subtle.
+        vec3 strandPerp = perp * uStrandLateral * 0.42 * uThickness;
+
         // Weave depth: move this strand toward or away from the camera
         // sinusoidally along its length. Because strand A uses uPhase=0
         // and strand B uses uPhase=π, they always offset in opposite
         // directions and cross over every half-twist. This is what makes
         // the cord read as "two ropes twisting" instead of "a flat pair
         // of stripes".
+        // Groove (slow along length): decimated uTwists for a stable texture.
         float twistPhase = uv.x * uTwists * TAU / 20.0 + uPhase;
         float weave = sin(twistPhase) * uWeaveDepth;
+        // Per-twist depth: one “bucket” per full 1/turns of u — same
+        // timescale as the 3D helix on the curve so crossings stagger in Z
+        // from one twist to the next, not all on one depth slice.
+        float nTw = max(uTwists, 0.0);
+        float tTw = uv.x * nTw;
+        float pt = TAU * tTw;
+        float perTwist = sin(pt) * cos(0.5 * pt + uPhase);
         // Strand B: constant forward bias so the two ropes never share one
         // depth plane (pairs with uStrandNudge in JS).
-        vec3 weaveOffset = viewDir * (weave + uStrandNudge * 0.0009);
+        vec3 weaveOffset = viewDir * (
+          weave
+          + uStrandNudge * 0.0038
+          + perTwist * uPerTwistDepth
+        );
 
         // Where the two ribbon *halves* of the same strip meet (tight
         // dips / the “V” under a bulb) they are coplanar and can z-fight.
         // A tiny aSide shift along view nudges the left edge slightly
         // toward the camera and the right edge back — not visible as width,
         // but it separates fragment depths.
-        float sideSep = 0.22 * uThickness;
+        float sideSep = 0.55 * uThickness;
         vec3 sideZ = viewDir * aSide * sideSep;
 
-        vec4 displaced = vec4(worldPos + offset + weaveOffset + sideZ, 1.0);
+        vec4 displaced = vec4(
+          worldPos + offset + strandPerp + weaveOffset + sideZ,
+          1.0
+        );
+
+        vWorldPos = displaced.xyz;
+        vPerpW = perp;
 
         vUv = uv;
         gl_Position = projectionMatrix * viewMatrix * displaced;
@@ -142,8 +206,23 @@ export function createWireMaterial(
       uniform float uAmbient;
       uniform float uGrooveStrength;
       uniform float uPhase;
+      uniform vec3 uKeyL;
+      uniform float uKeyI;
+      uniform vec3 uFillL;
+      uniform float uFillI;
+      uniform vec3 uHemiSky;
+      uniform vec3 uHemignd;
+      uniform float uHemiI;
+      uniform vec3 uPPos0; uniform vec3 uPPos1; uniform vec3 uPPos2; uniform vec3 uPPos3;
+      uniform vec3 uPPos4; uniform vec3 uPPos5; uniform vec3 uPPos6; uniform vec3 uPPos7;
+      uniform vec3 uPCol0; uniform vec3 uPCol1; uniform vec3 uPCol2; uniform vec3 uPCol3;
+      uniform vec3 uPCol4; uniform vec3 uPCol5; uniform vec3 uPCol6; uniform vec3 uPCol7;
+      uniform float uPCount;
+      uniform float uPointRange;
 
       varying vec2 vUv;
+      varying vec3 vWorldPos;
+      varying vec3 vPerpW;
 
       const float PI = 3.14159265358979;
       const float TAU = 6.28318530717958;
@@ -155,19 +234,31 @@ export function createWireMaterial(
       // exact lockstep so the crossover and the groove line up visually.
       const float GROOVE_FREQ = 1.0 / 20.0;
 
+      // Point lights: inverse-square, capped by range, colored spill ("reflections").
+      vec3 pointTerm(vec3 wpos, vec3 lpos, vec3 lcol, vec3 n) {
+        vec3 toL = lpos - wpos;
+        float d2 = max(dot(toL, toL), 1e-4);
+        float d = sqrt(d2);
+        if (d > uPointRange) {
+          return vec3(0.0);
+        }
+        vec3 L = toL / d;
+        float nd = max(0.0, dot(n, L));
+        float att = 1.0 / (0.2 + d2);
+        return lcol * att * nd * 0.018;
+      }
+
       void main() {
         float u = vUv.x;
         float v = vUv.y;
 
-        // ---------- Cylindrical cross-section shading ----------
-        // Treat V=0.5 as the center of the cord (facing camera) and
-        // V=0 / V=1 as the grazing edges. theta is the angular position
-        // around the imaginary cylinder, so cos(theta) is effectively
-        // n dot view for a cord whose axis lies along the tangent. This
-        // is what gives the wire a real rounded look instead of a flat
-        // strip with a sinewave over it.
+        vec3 V = normalize(cameraPosition - vWorldPos);
         float theta = (v - 0.5) * PI;
         float ndotv = max(cos(theta), 0.0);
+        vec3 pW = normalize(vPerpW);
+        vec3 nSurf = normalize(cos(theta) * V + sin(theta) * pW);
+        if (ndotv < 0.001) nSurf = V;
+
         float diffuse = pow(ndotv, 0.7);
 
         // ---------- AA helix groove ----------
@@ -183,9 +274,22 @@ export function createWireMaterial(
         float ridge = smoothstep(0.75 - aa, 0.75 + aa, spiral);
         float groove = smoothstep(-0.75 + aa, -0.75 - aa, spiral);
 
-        // ---------- Compose ----------
-        float lighting = uAmbient * 0.35 + diffuse * 0.75;
-        vec3 color = uBaseColor * lighting;
+        // ---------- Scene lights (key / fill / hemi) ----------
+        float dirK = 0.55 * uKeyI * max(0.0, dot(nSurf, uKeyL));
+        float dirF = 0.55 * uFillI * max(0.0, dot(nSurf, uFillL));
+        vec3 hemiC = (uHemiSky * (0.5 + 0.5 * nSurf.y) + uHemignd * (0.5 - 0.5 * nSurf.y)) * (0.4 * uHemiI);
+        float baseLight = uAmbient * 0.35 + diffuse * 0.75 + dirK + dirF;
+        vec3 color = uBaseColor * (baseLight + hemiC);
+
+        vec3 pAcc = step(0.5, uPCount) * pointTerm(vWorldPos, uPPos0, uPCol0, nSurf);
+        pAcc += step(1.5, uPCount) * pointTerm(vWorldPos, uPPos1, uPCol1, nSurf);
+        pAcc += step(2.5, uPCount) * pointTerm(vWorldPos, uPPos2, uPCol2, nSurf);
+        pAcc += step(3.5, uPCount) * pointTerm(vWorldPos, uPPos3, uPCol3, nSurf);
+        pAcc += step(4.5, uPCount) * pointTerm(vWorldPos, uPPos4, uPCol4, nSurf);
+        pAcc += step(5.5, uPCount) * pointTerm(vWorldPos, uPPos5, uPCol5, nSurf);
+        pAcc += step(6.5, uPCount) * pointTerm(vWorldPos, uPPos6, uPCol6, nSurf);
+        pAcc += step(7.5, uPCount) * pointTerm(vWorldPos, uPPos7, uPCol7, nSurf);
+        color += pAcc;
 
         // Metallic ridge highlight — tint bright with the base color so
         // silver/gold/copper themes still read as their hue on the

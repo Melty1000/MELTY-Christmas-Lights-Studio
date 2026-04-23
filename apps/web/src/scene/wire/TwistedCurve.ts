@@ -20,6 +20,8 @@ export class TwistedCurve extends Curve<Vector3> {
   cornerSharpness = 8;
   socketRadius: number;
   bypassRadius: number;
+  /** Z tuck at bulb joins (larger for thin wire); set from WIRE_THICKNESS in WireRibbon. */
+  connectZBack = 0.04;
 
   constructor(
     baseCurve: CatmullRomCurve3,
@@ -120,9 +122,22 @@ export class TwistedCurve extends Curve<Vector3> {
       _finalPos.y += verticalOffset;
     }
 
+    // Tuck the dip behind the base line so the ribbon does not read in
+    // front of the socket; `connectZBack` scales with WIRE_THICKNESS.
     if (this.isBillboard && type === 'connect' && influence > 0) {
-      _finalPos.z = basePoint.z + 0.02 * influence;
+      _finalPos.z = basePoint.z - this.connectZBack * influence;
     }
+
+    // Per-twist Z: helix-rate depth so strands do not sit in one plane.
+    // At bulb connects, damp this — otherwise a +swing cancels the tuck and
+    // the dip pokes through the gold socket.
+    const turnN = Math.max(1e-4, this.turns);
+    const helixT = 2.0 * Math.PI * t * turnN;
+    const amp = 0.06 * (this.offset + 0.028) + 0.012;
+    const perTwistZ = amp * Math.sin(helixT) * Math.cos(0.5 * helixT + this.phase * 0.3);
+    const helixDamp =
+      type === 'connect' && influence > 0 ? 1.0 - influence * influence : 1.0;
+    _finalPos.z += perTwistZ * helixDamp;
 
     return optionalTarget.copy(_finalPos);
   }

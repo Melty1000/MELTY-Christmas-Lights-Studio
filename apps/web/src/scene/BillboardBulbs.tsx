@@ -4,17 +4,18 @@ import {
   Color,
   DoubleSide,
   DynamicDrawUsage,
+  type Camera,
   InstancedBufferAttribute,
   InstancedMesh,
   Object3D,
   PointLight,
-  Quaternion,
   ShaderMaterial,
   Shape,
   ShapeGeometry,
   Vector3,
 } from 'three';
 import { createBulbAnimationState, stepBulbAnimation, type BulbAnimationState } from './animation.ts';
+import { beginPointSpillFrame, pushPointSpill } from './wire/pointSpillState.ts';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 import { getBulbPalette } from './utils.ts';
 
@@ -49,8 +50,10 @@ interface BillboardInstanceOffset {
 const _glassDummy = new Object3D();
 const _filamentDummy = new Object3D();
 const _socketDummy = new Object3D();
-const _billboardQuaternion = new Quaternion();
+const _depthOri = new Object3D();
+const _lookAtTarget = new Vector3();
 const _offsetVec = new Vector3();
+const _assemblyDepthWorld = new Vector3();
 const _animatedColor = new Color();
 const _socketColor = new Color();
 const _filamentColor = new Color();
@@ -60,10 +63,10 @@ const _filamentColor = new Color();
 // ---------------------------------------------------------------------------
 // In the legacy app this feature was labeled "Reflections" in the UI — the
 // POINT_LIGHTS_ENABLED toggle drives colored per-bulb point lights that spill
-// onto the MeshStandardMaterial wire ribbon, which is the only PBR surface in
-// the scene (the glass/socket/filament are custom shaders that don't sample
-// Three.js lights). Tuning notes below reflect the constraints of this scene
-// specifically — not generic point light physics.
+// onto the wire: Three.js point lights plus a matching hand-written spill
+// in `createWireMaterial` (ShaderMaterial). Billboards are custom shaders too.
+// Tuning notes below reflect the constraints of this scene specifically — not
+// generic point light physics.
 
 // Three.js compiles point lights into the shader program at the declared
 // maximum count, and large counts blow out uniform budgets / mobile tiled
@@ -94,7 +97,7 @@ const POINT_LIGHT_VERTICAL_OFFSET = 0.3;
 const BILLBOARD_OFFSETS = {
   filament: { y: -2.2, z: 0.04 } satisfies BillboardInstanceOffset,
   glass: { y: -1.4, z: 0.05 } satisfies BillboardInstanceOffset,
-  socket: { y: -1.75, z: 0.06 } satisfies BillboardInstanceOffset,
+  socket: { y: -1.75, z: 0.1 } satisfies BillboardInstanceOffset,
 } as const;
 
 export function BillboardBulbs({ bulbs, themePalette, pointLightsEnabled }: BillboardBulbsProps) {
@@ -150,6 +153,7 @@ export function BillboardBulbs({ bulbs, themePalette, pointLightsEnabled }: Bill
     // opacity, ambient, animation speeds/styles) updates on the next GL
     // frame without re-rendering the scene graph.
     const config = useConfigStore.getState().config;
+    beginPointSpillFrame();
 
     const glassColorAttr = glass.geometry.getAttribute('instanceColor') as
       | InstancedBufferAttribute
@@ -181,7 +185,16 @@ export function BillboardBulbs({ bulbs, themePalette, pointLightsEnabled }: Bill
       return;
     }
 
-    _billboardQuaternion.copy(camera.quaternion);
+    const tWire = config.WIRE_THICKNESS;
+    // Same camera-space +Z (billboard "depth") for glass, filament, socket, lights.
+    // Thinner ribbon and zoomed-out camera: push the cap stack toward the lens
+    // so dips stay behind the gold shell (log-Z precision + parallax both hurt).
+    const inv = 0.03 / (tWire + 0.0055);
+    const distScale = 1.0 + 0.07 * Math.max(0, config.CAMERA_DISTANCE - 8);
+    const zBoost = Math.min(
+      0.4,
+      (0.02 + 0.2 * Math.min(2.2, inv) + 0.08 * Math.min(1, inv * inv * 0.04)) * distScale,
+    );
 
     const elapsed = clock.getElapsedTime();
     for (let index = 0; index < bulbs.length; index++) {
@@ -203,38 +216,46 @@ export function BillboardBulbs({ bulbs, themePalette, pointLightsEnabled }: Bill
       const palette = getBulbPalette(animation.colorHex);
       const [x, y, z] = bulb.position;
 
+      // Y-locked look-at (cylindrical): reduces edge-of-screen X drift vs full
+      // screen-facing billboards. Depth boost matches this basis per bulb.
+      _lookAtTarget.set(camera.position.x, y, camera.position.z);
+      _depthOri.position.set(x, y, z);
+      _depthOri.lookAt(_lookAtTarget);
+      _assemblyDepthWorld.set(0, 0, zBoost);
+      _assemblyDepthWorld.applyQuaternion(_depthOri.quaternion);
+
       writeInstance(
         glass,
         index,
         _glassDummy,
-        _billboardQuaternion,
+        camera,
         x,
         y,
         z,
         config.BULB_SCALE,
-        BILLBOARD_OFFSETS.glass,
+        { y: BILLBOARD_OFFSETS.glass.y, z: BILLBOARD_OFFSETS.glass.z + zBoost },
       );
       writeInstance(
         filament,
         index,
         _filamentDummy,
-        _billboardQuaternion,
+        camera,
         x,
         y,
         z,
         config.BULB_SCALE,
-        BILLBOARD_OFFSETS.filament,
+        { y: BILLBOARD_OFFSETS.filament.y, z: BILLBOARD_OFFSETS.filament.z + zBoost },
       );
       writeInstance(
         socket,
         index,
         _socketDummy,
-        _billboardQuaternion,
+        camera,
         x,
         y,
         z,
         config.BULB_SCALE,
-        BILLBOARD_OFFSETS.socket,
+        { y: BILLBOARD_OFFSETS.socket.y, z: BILLBOARD_OFFSETS.socket.z + zBoost },
       );
 
       _animatedColor.setHex(animation.colorHex);
@@ -258,11 +279,11 @@ export function BillboardBulbs({ bulbs, themePalette, pointLightsEnabled }: Bill
         if (light) {
           light.color.setHex(animation.colorHex);
           light.intensity = POINT_LIGHT_INTENSITY * animation.intensity;
-          light.position.set(
-            x,
-            y + POINT_LIGHT_VERTICAL_OFFSET * config.BULB_SCALE,
-            z,
-          );
+          const lpx = x + _assemblyDepthWorld.x;
+          const lpy = y + POINT_LIGHT_VERTICAL_OFFSET * config.BULB_SCALE + _assemblyDepthWorld.y;
+          const lpz = z + _assemblyDepthWorld.z;
+          light.position.set(lpx, lpy, lpz);
+          pushPointSpill(lpx, lpy, lpz, animation.colorHex, POINT_LIGHT_INTENSITY * animation.intensity);
         }
       }
     }
@@ -279,6 +300,7 @@ export function BillboardBulbs({ bulbs, themePalette, pointLightsEnabled }: Bill
     (glassMaterial.uniforms.baseOpacity!).value = config.GLASS_OPACITY;
     (glassMaterial.uniforms.baseEmissiveIntensity!).value = config.EMISSIVE_INTENSITY;
     (glassMaterial.uniforms.uAmbient!).value = config.AMBIENT_INTENSITY;
+    (glassMaterial.uniforms.uGlassRoughness!).value = config.GLASS_ROUGHNESS;
     (socketMaterial.uniforms.uAmbient!).value = config.AMBIENT_INTENSITY;
   });
 
@@ -346,18 +368,22 @@ function writeInstance(
   mesh: InstancedMesh,
   index: number,
   dummy: Object3D,
-  cameraQuaternion: Quaternion,
+  camera: Camera,
   x: number,
   y: number,
   z: number,
   scale: number,
   offset: BillboardInstanceOffset,
 ) {
-  _offsetVec.set(0, offset.y * scale, offset.z);
-  _offsetVec.applyQuaternion(cameraQuaternion);
-  dummy.position.set(x + _offsetVec.x, y + _offsetVec.y, z + _offsetVec.z);
-  dummy.quaternion.copy(cameraQuaternion);
+  // Horizontal-only rotation: look at the camera projected to the bulb's Y
+  // (same y as the attachment point) so the cap stack stays on the string in XZ.
+  _lookAtTarget.set(camera.position.x, y, camera.position.z);
+  dummy.position.set(x, y, z);
   dummy.scale.setScalar(scale);
+  dummy.lookAt(_lookAtTarget);
+  _offsetVec.set(0, offset.y * scale, offset.z);
+  _offsetVec.applyQuaternion(dummy.quaternion);
+  dummy.position.set(x + _offsetVec.x, y + _offsetVec.y, z + _offsetVec.z);
   dummy.updateMatrix();
   mesh.setMatrixAt(index, dummy.matrix);
 }
@@ -418,6 +444,10 @@ function createGlassMaterial(): ShaderMaterial {
       // slider only ever changed the wire and the bulbs looked detached
       // from the rest of the scene's lighting.
       uAmbient: { value: 1.0 },
+      // In MeshStandardMaterial, roughness controls the GGX microfacet lobe.
+      // This dome is a custom ShaderMaterial — we map GLASS_ROUGHNESS to
+      // specular exponent + strength (see fragment shader).
+      uGlassRoughness: { value: 0 },
     },
     vertexShader: `
       attribute vec3 instanceColor;
@@ -443,6 +473,7 @@ function createGlassMaterial(): ShaderMaterial {
       uniform float baseOpacity;
       uniform float baseEmissiveIntensity;
       uniform float uAmbient;
+      uniform float uGlassRoughness;
 
       varying vec3 vColor;
       varying float vEmissive;
@@ -462,15 +493,21 @@ function createGlassMaterial(): ShaderMaterial {
 
         float NdotV = max(0.0, dot(domeNormal, vec3(0.0, 0.0, 1.0)));
         float highlight = pow(NdotV, 1.5);
-        float rim = pow(1.0 - NdotV, 2.0) * 0.5;
+        float rimPower = 2.0 + uGlassRoughness * 4.0;
+        float rim = pow(1.0 - NdotV, rimPower) * 0.5;
         float topLight = max(0.0, dot(domeNormal, normalize(vec3(0.0, 0.5, 1.0))));
         float lighting = uAmbient * 0.3 + topLight * 0.4 + highlight * 0.6;
 
         vec3 emissiveColor = vColor * vEmissive * baseEmissiveIntensity;
         vec3 finalColor = vColor * lighting * 0.5 + emissiveColor;
 
-        float specular = pow(max(0.0, dot(domeNormal, normalize(vec3(0.2, 0.3, 1.0)))), 8.0);
-        finalColor += vec3(specular * 0.5);
+        vec3 specLight = normalize(vec3(0.2, 0.3, 1.0));
+        // Wider highlight when “rough” (higher GLASS_ROUGHNESS), matching the
+        // idea of PBR roughness without a full GGX implementation.
+        float specPower = mix(2.0, 56.0, 1.0 - uGlassRoughness);
+        float specular = pow(max(0.0, dot(domeNormal, specLight)), specPower);
+        float specScale = 0.5 * (1.0 - 0.5 * uGlassRoughness);
+        finalColor += vec3(specular * specScale);
         finalColor += vColor * rim * 0.3;
 
         gl_FragColor = vec4(finalColor, baseOpacity);

@@ -43,26 +43,39 @@ export const configSchema = z.object({
   SAG_AMPLITUDE: z.number().min(0).max(2).default(0.4),
   LIGHTS_PER_SEGMENT: z.number().int().min(1).max(100).default(3),
 
-  BULB_SCALE: z.number().min(0.1).max(3).default(0.23),
+  // Clamped to 1 max. Old saves with values >1 are coerced on load so
+  // `config.json` does not fail validation.
+  BULB_SCALE: z.preprocess(
+    (v) => (typeof v === 'number' ? Math.min(1, Math.max(0.1, v)) : v),
+    z.number().min(0.1).max(1),
+  ).default(0.23),
   WIRE_THICKNESS: z.number().min(0).max(0.2).default(0.031),
   WIRE_SEPARATION: z.number().min(0).max(0.3).default(0.036),
   WIRE_TWISTS: z.number().min(0).max(1000).default(215),
 
-  AMBIENT_INTENSITY: z.number().min(0).max(5).default(1),
+  AMBIENT_INTENSITY: z.preprocess(
+    (v) => (typeof v === 'number' ? Math.min(5, Math.max(0.15, v)) : v),
+    z.number().min(0.15).max(5),
+  ).default(1),
   KEY_LIGHT_INTENSITY: z.number().min(0).max(5).default(1.2),
   FILL_LIGHT_INTENSITY: z.number().min(0).max(5).default(0.42),
   HEMI_LIGHT_INTENSITY: z.number().min(0).max(5).default(0.35),
 
   POSTFX_ENABLED: z.boolean().default(true),
-  BLOOM_STRENGTH: z.number().min(0).max(5).default(0.4),
+  BLOOM_STRENGTH: z.number().min(0).max(5).default(0.65),
   BLOOM_RADIUS: z.number().min(0).max(2).default(0.1),
-  BLOOM_THRESHOLD: z.number().min(0).max(1).default(0.2),
-  BLOOM_INTENSITY: z.number().min(0).max(5).default(0.4),
+  BLOOM_THRESHOLD: z.number().min(0).max(1).default(0.12),
+  BLOOM_INTENSITY: z.number().min(0).max(5).default(0.85),
 
-  GLASS_OPACITY: z.number().min(0).max(1).default(0.15),
+  // Cap <1 so the bulb dome never fully occludes; old saves with 1.0 coerce.
+  GLASS_OPACITY: z.preprocess(
+    (v) => (typeof v === 'number' ? Math.min(0.9, v) : v),
+    z.number().min(0).max(0.9),
+  ).default(0.15),
+  // Maps to the custom dome shader’s specular width, not Three’s PBR
+  // roughness (see BillboardBulbs glass material).
   GLASS_ROUGHNESS: z.number().min(0).max(1).default(0),
   EMISSIVE_INTENSITY: z.number().min(0).max(20).default(6),
-  GLASS_IOR: z.number().min(1).max(3).default(2.5),
 
   ANIMATION_SPEED: z.number().min(0).max(5).default(0),
   SWAY_X: z.number().min(0).max(2).default(0),
@@ -84,7 +97,9 @@ export const configSchema = z.object({
   STARS_TWINKLE_SPEED: z.number().min(0).max(5).default(0),
 
   CAMERA_DISTANCE: z.number().min(1).max(200).default(22),
-  CAMERA_HEIGHT: z.number().min(-50).max(50).default(-3),
+  // Offsets the look-at point from the string centroid (world). Previously
+  // the camera "height" in world; semantics are now target-relative.
+  CAMERA_HEIGHT: z.number().min(-50).max(50).default(0),
   CAMERA_X: z.number().min(-50).max(50).default(0),
 
   TENSION: z.number().min(-1).max(1).default(0),

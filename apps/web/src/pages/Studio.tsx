@@ -74,36 +74,43 @@ export function Studio() {
       <ThemeSection />
 
       <CollapsibleSection id="bulbs" title="Bulbs" defaultOpen>
-        <BoundRange field="BULB_SCALE" label="Bulb scale" min={0.1} max={3} step={0.01} />
-        <BoundRange field="GLASS_OPACITY" label="Glass opacity" min={0} max={1} step={0.01} />
+        <BoundRange field="BULB_SCALE" label="Bulb scale" min={0.1} max={1} step={0.01} />
+        <BoundRange field="GLASS_OPACITY" label="Glass opacity" min={0} max={0.9} step={0.01} />
         <BoundRange field="GLASS_ROUGHNESS" label="Glass roughness" min={0} max={1} step={0.01} />
-        <BoundRange field="GLASS_IOR" label="Glass IOR" min={1} max={3} step={0.01} />
       </CollapsibleSection>
 
       <WiresSection />
 
       <CollapsibleSection id="motion" title="Motion">
-        <BoundSelect field="ANIMATION_STYLE" label="Style" options={ANIMATION_OPTIONS} />
         <BoundRange field="ANIMATION_SPEED" label="Animation speed" min={0} max={5} step={0.01} />
         <BoundRange field="SWAY_X" label="Sway X" min={0} max={2} step={0.01} />
         <BoundRange field="SWAY_Z" label="Sway Z" min={0} max={2} step={0.01} />
       </CollapsibleSection>
 
       <CollapsibleSection id="twinkle" title="Twinkle">
+        <BoundSelect field="ANIMATION_STYLE" label="Style" options={ANIMATION_OPTIONS} />
         <BoundRange field="TWINKLE_SPEED" label="Twinkle speed" min={0} max={4} step={0.01} />
         <BoundRange field="TWINKLE_MIN_INTENSITY" label="Min intensity" min={0} max={1} step={0.01} />
         <BoundRange field="TWINKLE_MAX_INTENSITY" label="Max intensity" min={0} max={1} step={0.01} />
         <BoundRange field="TWINKLE_RANDOMNESS" label="Randomness" min={0} max={1} step={0.01} />
       </CollapsibleSection>
 
-      <CollapsibleSection id="camera" title="Camera">
+      <CollapsibleSection
+        id="camera"
+        title="Camera"
+        hint="Distance dollies along the view (zoom). X/Y move the look-at on the string."
+      >
         <BoundRange field="CAMERA_DISTANCE" label="Distance" min={1} max={200} step={0.1} />
-        <BoundRange field="CAMERA_HEIGHT" label="Height (Y)" min={-50} max={50} step={0.1} />
-        <BoundRange field="CAMERA_X" label="Pan (X)" min={-50} max={50} step={0.1} />
+        <BoundRange field="CAMERA_HEIGHT" label="Target offset (Y)" min={-50} max={50} step={0.1} />
+        <BoundRange field="CAMERA_X" label="Target offset (X)" min={-50} max={50} step={0.1} />
       </CollapsibleSection>
 
-      <CollapsibleSection id="lighting" title="Scene Lighting">
-        <BoundRange field="AMBIENT_INTENSITY" label="Ambient" min={0} max={5} step={0.01} />
+      <CollapsibleSection
+        id="lighting"
+        title="Scene lighting"
+        hint="Ambient: overall. Key / fill / hemi: wire contrast and read. Reflections: colored spill on the cord."
+      >
+        <BoundRange field="AMBIENT_INTENSITY" label="Ambient" min={0.15} max={5} step={0.01} />
         <BoundRange field="KEY_LIGHT_INTENSITY" label="Key light" min={0} max={5} step={0.01} />
         <BoundRange field="FILL_LIGHT_INTENSITY" label="Fill light" min={0} max={5} step={0.01} />
         <BoundRange field="HEMI_LIGHT_INTENSITY" label="Hemisphere" min={0} max={5} step={0.01} />

@@ -15,6 +15,7 @@ import {
   type Mesh,
   NoToneMapping,
   type ShaderMaterial,
+  Color,
   Vector3,
 } from 'three';
 import {
@@ -31,10 +32,23 @@ import { generateBasePoints } from './wire/basePoints.ts';
 import { allocateRibbonBuffers, writeRibbonPositions } from './wire/buildRibbonGeometry.ts';
 import { ribbonSegmentCount } from './wire/buildTubeGeometry.ts';
 import { createWireMaterial } from './wire/createWireMaterial.ts';
+import { pointSpillCol, pointSpillCount, pointSpillPos } from './wire/pointSpillState.ts';
 import { TwistedCurve } from './wire/TwistedCurve.ts';
 import { AlphaLift } from './effects/AlphaLift.tsx';
 
+const _K_LIGHT_TO = new Vector3();
+const _F_LIGHT_TO = new Vector3();
+
 const BACKGROUND_COLOR = '#08111d';
+
+function computeStringFocusCentroid(points: Vector3[]): Vector3 {
+  const c = new Vector3();
+  for (const p of points) {
+    c.add(p);
+  }
+  c.divideScalar(Math.max(1, points.length));
+  return c;
+}
 
 // ---------------------------------------------------------------------------
 // Structural vs. continuous config
@@ -123,7 +137,9 @@ export function Scene() {
       camera={{
         far: 200,
         fov: 40,
-        near: 0.1,
+        // Slightly higher near plane improves depth precision for thin,
+        // intersecting geometry (wires) without affecting our framing.
+        near: 0.18,
         // Seed position only — CameraPose takes over on mount and updates
         // the camera imperatively every frame, so changing CAMERA_* no
         // longer causes React to re-render this tree.
@@ -134,6 +150,9 @@ export function Scene() {
         alpha: true,
         antialias: structural.ANTIALIAS_ENABLED,
         premultipliedAlpha: false,
+        // Wires are paper-thin in places; log-z reduces z-fighting when two
+        // ribbons (or a ribbon and the socket) sit at near-equal depth.
+        logarithmicDepthBuffer: true,
       }}
       onCreated={({ gl }) => {
         gl.setClearColor(0x000000, 0);
@@ -179,9 +198,17 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
   }, [gl, structural.POSTFX_ENABLED]);
 
   const basePoints = useMemo(
-    () => generateBasePoints(structural.NUM_PINS, structural.SAG_AMPLITUDE, structural.TENSION),
-    [structural.NUM_PINS, structural.SAG_AMPLITUDE, structural.TENSION],
+    () =>
+      generateBasePoints(
+        structural.NUM_PINS,
+        structural.SAG_AMPLITUDE,
+        structural.TENSION,
+        structural.WIRE_TWISTS,
+      ),
+    [structural.NUM_PINS, structural.SAG_AMPLITUDE, structural.TENSION, structural.WIRE_TWISTS],
   );
+
+  const stringFocus = useMemo(() => computeStringFocusCentroid(basePoints), [basePoints]);
 
   const baseCurve = useMemo(
     () => new CatmullRomCurve3(basePoints, false, 'centripetal'),
@@ -311,7 +338,9 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
       }
     }
     if (bloom) {
-      bloom.intensity = c.BLOOM_STRENGTH * Math.max(0.35, c.BLOOM_INTENSITY);
+      // Linear product so sliders predictably add halo; no hidden floor
+      // that made defaults ~invisible.
+      bloom.intensity = 1.8 * c.BLOOM_STRENGTH * c.BLOOM_INTENSITY;
       const lum = bloom.luminanceMaterial;
       if (lum?.uniforms?.threshold) {
         lum.uniforms.threshold.value = c.BLOOM_THRESHOLD;
@@ -324,12 +353,22 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
       {structural.BACKGROUND_ENABLED ? (
         <color attach="background" args={[BACKGROUND_COLOR]} />
       ) : null}
-      <CameraPose />
+      <CameraPose stringFocus={stringFocus} />
 
       <ambientLight ref={ambientRef} intensity={0} />
-      <directionalLight ref={keyLightRef} intensity={0} position={[0, 12, 12]} />
-      <directionalLight ref={fillLightRef} intensity={0} position={[0, 4, -12]} />
-      <hemisphereLight ref={hemiLightRef} args={['#eef5ff', '#0a0a12', 0]} />
+      <directionalLight
+        name="melt-key"
+        ref={keyLightRef}
+        intensity={0}
+        position={[0, 12, 12]}
+      />
+      <directionalLight
+        name="melt-fill"
+        ref={fillLightRef}
+        intensity={0}
+        position={[0, 4, -12]}
+      />
+      <hemisphereLight name="melt-hemi" ref={hemiLightRef} args={['#eef5ff', '#0a0a12', 0]} />
 
       {structural.STARS_ENABLED ? (
         <Stars
@@ -395,26 +434,29 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
   );
 }
 
-// Fixed world-space look direction for the scene camera. Derived from the
-// original default pose (eye (0,-3,15) → target (0,1.8,0)) so the initial
-// framing matches what the user is used to: a gentle upward tilt toward the
-// light string. Keeping this vector constant means every camera slider is
-// pure translation — pan, height, and zoom never change the camera's
-// orientation, so the scene can't "rotate on the Z axis" as you zoom.
+// Fixed view direction (unit): camera dolly is along this ray toward the
+// string focus, so "distance" does not slide the subject vertically the way
+// a raw world-Z coordinate did.
 const CAMERA_FORWARD = new Vector3(0, 4.8, -15).normalize();
-const _cameraTarget = new Vector3();
+const _stringFocusW = new Vector3();
+const _eyeW = new Vector3();
 
-function CameraPose() {
+function CameraPose({ stringFocus }: { stringFocus: Vector3 }) {
   const { camera } = useThree();
 
-  // Update the camera imperatively every frame from the store. This makes
-  // camera sliders zero-cost from a React standpoint: no re-render, no
-  // reconciliation, just a matrix update on the next GL frame.
   useFrame(() => {
     const c = useConfigStore.getState().config;
-    camera.position.set(c.CAMERA_X, c.CAMERA_HEIGHT, c.CAMERA_DISTANCE);
-    _cameraTarget.copy(camera.position).addScaledVector(CAMERA_FORWARD, 10);
-    camera.lookAt(_cameraTarget);
+    _stringFocusW.set(
+      stringFocus.x + c.CAMERA_X,
+      stringFocus.y + c.CAMERA_HEIGHT,
+      stringFocus.z,
+    );
+    // eye = focus − dolly * forward  ⇒  moving distance only changes zoom;
+    // X/Y are shifts of the look-at on the string.
+    _eyeW.copy(_stringFocusW).addScaledVector(CAMERA_FORWARD, -c.CAMERA_DISTANCE);
+    camera.position.copy(_eyeW);
+    camera.up.set(0, 1, 0);
+    camera.lookAt(_stringFocusW);
   });
 
   return null;
@@ -456,8 +498,10 @@ function PostFX({
       multisampling={antialiased ? 8 : 0}
       frameBufferType={HalfFloatType}
     >
+      {/* Default matches shared BLOOM_THRESHOLD; SceneContent useFrame updates
+          luminance every frame (React-driven threshold would JSON-rebuild). */}
       <Bloom
-        luminanceThreshold={0.6}
+        luminanceThreshold={0.12}
         mipmapBlur
         intensity={1}
         radius={bloomRadius}
@@ -493,6 +537,7 @@ function WireRibbon({
     () => createWireMaterial(color, twistPhase, strandId),
     [color, twistPhase, strandId],
   );
+  const lastConnectZBack = useRef<string | null>(null);
 
   // Positions + tangents are camera-independent — only the shader's
   // extrusion depends on the view. Rewriting them once per curve change is
@@ -514,22 +559,82 @@ function WireRibbon({
     };
   }, [material]);
 
-  // Imperative per-frame uniform sync. Every value we read here is either
-  // continuous (WIRE_THICKNESS, AMBIENT_INTENSITY) or cheap to rewrite
-  // every frame (uTwists). Doing this in useFrame instead of via React
-  // props means dragging the wire sliders is zero-React-work.
-  useFrame(() => {
+  // priority 1: run after default (0) so Billboard point lights are written
+  // to pointSpillState before we read it for the wire reflection term.
+  useFrame((state) => {
     const c = useConfigStore.getState().config;
+    const tW = c.WIRE_THICKNESS;
+    // Zoomed out = worse depth; scale tuck and socket alignment with camera distance.
+    const distScale = 1.0 + 0.055 * Math.max(0, c.CAMERA_DISTANCE - 9);
+    const zBack = (0.04 + 0.3 * Math.min(1.75, 0.03 / (tW + 0.006))) * distScale;
+    const zKey = `${zBack.toFixed(6)}|${distScale.toFixed(3)}`;
+    if (lastConnectZBack.current !== zKey) {
+      lastConnectZBack.current = zKey;
+      curve.connectZBack = zBack;
+      writeRibbonPositions(buffers, curve);
+    }
+
     const u = material.uniforms;
     if (u.uTwists) u.uTwists.value = c.WIRE_TWISTS;
     if (u.uAmbient) u.uAmbient.value = c.AMBIENT_INTENSITY;
     if (u.uThickness) u.uThickness.value = c.WIRE_THICKNESS;
-    // Stronger physical separation at crossings when the cord is thick; keep
-    // a floor so thin settings still break z-fights between the two strands.
     if (u.uWeaveDepth) {
-      u.uWeaveDepth.value = Math.max(0.055, c.WIRE_THICKNESS * 2.25);
+      u.uWeaveDepth.value = Math.max(0.1, tW * 3.1);
     }
-  });
+    if (u.uPerTwistDepth) {
+      u.uPerTwistDepth.value = Math.min(
+        0.07,
+        0.012 + 0.05 * Math.min(2.5, 0.034 / (tW + 0.011)),
+      );
+    }
+    const sign = strandId === 0 ? 1 : -1;
+    const boost = 1.0 + 0.12 / (tW + 0.012);
+    const b = Math.min(1.45, boost);
+    material.polygonOffsetFactor = sign * 1.25 * 0.95 * b;
+    material.polygonOffsetUnits = sign * 2.0 * Math.min(1.35, b);
 
-  return <mesh ref={meshRef} geometry={buffers.geometry} material={material} renderOrder={1} />;
+    const scene = state.scene;
+    const keyL = scene.getObjectByName('melt-key') as DirectionalLight | null;
+    if (keyL && u.uKeyL && u.uKeyI) {
+      keyL.getWorldDirection(_K_LIGHT_TO);
+      _K_LIGHT_TO.negate();
+      (u.uKeyL as { value: Vector3 }).value.copy(_K_LIGHT_TO);
+      (u.uKeyI as { value: number }).value = c.KEY_LIGHT_INTENSITY;
+    }
+    const fillL = scene.getObjectByName('melt-fill') as DirectionalLight | null;
+    if (fillL && u.uFillL && u.uFillI) {
+      fillL.getWorldDirection(_F_LIGHT_TO);
+      _F_LIGHT_TO.negate();
+      (u.uFillL as { value: Vector3 }).value.copy(_F_LIGHT_TO);
+      (u.uFillI as { value: number }).value = c.FILL_LIGHT_INTENSITY;
+    }
+    const hemiL = scene.getObjectByName('melt-hemi') as HemisphereLight | null;
+    if (hemiL && u.uHemiI && u.uHemiSky && u.uHemignd) {
+      (u.uHemiI as { value: number }).value = c.HEMI_LIGHT_INTENSITY;
+      (u.uHemiSky as { value: Color }).value.copy(hemiL.color);
+      (u.uHemignd as { value: Color }).value.copy(hemiL.groundColor);
+    }
+
+    const n = Math.min(8, pointSpillCount);
+    if (u.uPCount) (u.uPCount as { value: number }).value = n;
+    for (let i = 0; i < 8; i++) {
+      const pU = u[`uPPos${i}` as 'uPPos0'];
+      const cU = u[`uPCol${i}` as 'uPCol0'];
+      if (pU && cU) {
+        (pU as { value: Vector3 }).value.copy(pointSpillPos[i]!);
+        (cU as { value: Color }).value.copy(pointSpillCol[i]!);
+      }
+    }
+  }, 1);
+
+  // Strands: stable draw order. Secondary strand draws after; pairs with
+  // material polygon offset so one side wins at ambiguous depths.
+  return (
+    <mesh
+      ref={meshRef}
+      geometry={buffers.geometry}
+      material={material}
+      renderOrder={1 + strandId}
+    />
+  );
 }
