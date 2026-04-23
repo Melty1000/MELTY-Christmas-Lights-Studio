@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import {
   Color,
@@ -111,7 +111,15 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
     animationStatesRef.current = bulbs.map((_, index) => animationStatesRef.current[index] ?? createBulbAnimationState(index));
   }, [bulbs]);
 
-  useEffect(() => {
+  // Must be useLayoutEffect, not useEffect. R3F's render loop runs via rAF
+  // and on first mount it can fire BEFORE a passive useEffect has attached
+  // the instance attributes — which would throw `Cannot read properties of
+  // undefined (reading 'setXYZ')` every frame and eventually cost us the
+  // WebGL context. useLayoutEffect runs synchronously after render/commit
+  // but before the browser gets a chance to paint, which is also before R3F
+  // schedules its first frame, so the attributes are guaranteed to exist by
+  // the time useFrame reads them.
+  useLayoutEffect(() => {
     const glass = glassRef.current;
     const filament = filamentRef.current;
     const socket = socketRef.current;
@@ -134,11 +142,35 @@ export function BillboardBulbs({ bulbs, config, themePalette }: BillboardBulbsPr
     const socket = socketRef.current;
     if (!glass || !filament || !socket) return;
 
-    const glassColorAttr = glass.geometry.getAttribute('instanceColor') as InstancedBufferAttribute;
-    const glassEmissiveAttr = glass.geometry.getAttribute('instanceEmissive') as InstancedBufferAttribute;
-    const filamentColorAttr = filament.geometry.getAttribute('instanceColor') as InstancedBufferAttribute;
-    const filamentEmissiveAttr = filament.geometry.getAttribute('instanceEmissive') as InstancedBufferAttribute;
-    const socketColorAttr = socket.geometry.getAttribute('instanceColor') as InstancedBufferAttribute;
+    const glassColorAttr = glass.geometry.getAttribute('instanceColor') as
+      | InstancedBufferAttribute
+      | undefined;
+    const glassEmissiveAttr = glass.geometry.getAttribute('instanceEmissive') as
+      | InstancedBufferAttribute
+      | undefined;
+    const filamentColorAttr = filament.geometry.getAttribute('instanceColor') as
+      | InstancedBufferAttribute
+      | undefined;
+    const filamentEmissiveAttr = filament.geometry.getAttribute('instanceEmissive') as
+      | InstancedBufferAttribute
+      | undefined;
+    const socketColorAttr = socket.geometry.getAttribute('instanceColor') as
+      | InstancedBufferAttribute
+      | undefined;
+
+    // Belt-and-braces guard: if R3F ever reconstructs the InstancedMesh (e.g.
+    // when `args` change due to bulbs.length swapping) the attribute setup
+    // effect might race the first post-remount frame. Bailing out for one
+    // frame is cheaper than losing the WebGL context to a thrown TypeError.
+    if (
+      !glassColorAttr ||
+      !glassEmissiveAttr ||
+      !filamentColorAttr ||
+      !filamentEmissiveAttr ||
+      !socketColorAttr
+    ) {
+      return;
+    }
 
     _billboardQuaternion.copy(camera.quaternion);
 
