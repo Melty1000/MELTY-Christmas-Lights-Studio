@@ -32,6 +32,57 @@ interface ConfigStore {
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Coalesced-patch plumbing.
+//
+// Slider `onChange` handlers fire per pixel of drag — dozens of calls per
+// second. Sending one `PATCH /api/config` per call hammers the browser's
+// per-origin request queue and the API's WebSocket fan-out, which makes the
+// control panel feel laggy even though the optimistic local `set` is
+// synchronous. We accumulate every field into `pendingPatch` and flush the
+// merged result on the next animation frame, so the UI stays instant while
+// the wire traffic is capped at ~60 req/s per origin with every in-flight
+// field merged.
+let pendingPatch: ConfigPatch = {};
+let flushScheduled = false;
+
+function schedulePatchFlush(
+  set: (partial: Partial<ConfigStore>) => void,
+  get: () => ConfigStore,
+) {
+  if (flushScheduled) return;
+  flushScheduled = true;
+
+  const flush = async () => {
+    flushScheduled = false;
+    const toSend = pendingPatch;
+    pendingPatch = {};
+    if (Object.keys(toSend).length === 0) return;
+
+    try {
+      const res = await fetch('/api/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(toSend),
+      });
+      if (!res.ok) {
+        throw new Error(`PATCH /api/config -> ${res.status}`);
+      }
+    } catch (err) {
+      set({ lastError: err instanceof Error ? err.message : String(err) });
+      void get().hydrate();
+    }
+  };
+
+  // Prefer rAF so the flush runs right after React commits the optimistic
+  // state. Fall back to a microtask-ish timeout for non-browser contexts
+  // (tests, SSR) where rAF isn't available.
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => void flush());
+  } else {
+    setTimeout(() => void flush(), 0);
+  }
+}
+
 function wsUrl(): string {
   if (typeof window === 'undefined') return '';
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -76,20 +127,13 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   },
 
   async patch(patch) {
+    // Apply optimistically so the UI (sliders, preview) reacts this frame.
     set((state) => ({ config: { ...state.config, ...patch } }));
-    try {
-      const res = await fetch('/api/config', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      if (!res.ok) {
-        throw new Error(`PATCH /api/config -> ${res.status}`);
-      }
-    } catch (err) {
-      set({ lastError: err instanceof Error ? err.message : String(err) });
-      void get().hydrate();
-    }
+    // Merge into the pending buffer and schedule a single rAF-coalesced
+    // network flush. Later keys in the same drag naturally overwrite earlier
+    // ones via Object.assign.
+    Object.assign(pendingPatch, patch);
+    schedulePatchFlush(set, get);
   },
 
   async reset() {
