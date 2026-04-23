@@ -250,12 +250,17 @@ function SceneContent({ config }: { config: Config }) {
             */}
             <ToneMapping mode={ToneMappingMode.AGX} />
             {/*
-              AlphaLift: lift alpha to match final luminance so the bloom
-              halo survives composition on a transparent canvas. Only needed
-              when the opaque background is off. EffectComposer's children
-              type doesn't accept `null`, so swap in an empty fragment.
+              AlphaLift is ALWAYS mounted and we control it with `strength`
+              instead of conditional mounting. Reason: EffectComposer walks
+              its children through React.Children.toArray to build the pass
+              chain, and any non-Effect child (null/fragment/etc.) will be
+              fed to the composer which then re-enters its build path every
+              frame throwing — flooding the console so hard it can freeze
+              the tab. A strength-of-0 pass is a cheap one-sample fullscreen
+              no-op, which is far less costly than tearing the pass chain
+              apart every time the background toggle flips.
             */}
-            {!config.BACKGROUND_ENABLED ? <AlphaLift strength={1.0} /> : <></>}
+            <AlphaLift strength={config.BACKGROUND_ENABLED ? 0 : 1} />
           </EffectComposer>
         ) : null}
       </Selection>
