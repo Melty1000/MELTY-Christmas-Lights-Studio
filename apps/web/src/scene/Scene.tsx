@@ -1,12 +1,6 @@
 import { Stars, Stats } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import {
-  EffectComposer,
-  Select,
-  Selection,
-  SelectiveBloom,
-  ToneMapping,
-} from '@react-three/postprocessing';
+import { Bloom, EffectComposer, ToneMapping } from '@react-three/postprocessing';
 import { ToneMappingMode } from 'postprocessing';
 import { useEffect, useMemo, useRef } from 'react';
 import {
@@ -206,64 +200,62 @@ function SceneContent({ config }: { config: Config }) {
         />
       ) : null}
 
-      {/* Selection wraps the scene + composer so <SelectiveBloom> can isolate
-          bulb emissives from the wire. Without this, threshold-based bloom
-          on a single composer reads the whole HDR scene and the lit wire
-          (ambient + directional + hemi light contributions) sails past the
-          threshold, producing the "whole scene glows / PostFX washes out"
-          look that doesn't match the legacy's triple-scene bloom. */}
-      <Selection>
-        <group ref={swayGroupRef}>
-          <WireRibbon
-            color={wireTheme.A}
-            curve={wireA}
-            segments={segmentCount}
-            thickness={config.WIRE_THICKNESS}
-          />
-          <WireRibbon
-            color={wireTheme.B}
-            curve={wireB}
-            segments={segmentCount}
-            thickness={config.WIRE_THICKNESS}
-          />
+      {/* Previously this was wrapped in <Selection>/<Select> + <SelectiveBloom>
+          to isolate the bulb emissives from the wire. That setup sent the
+          drei Selection context into an infinite "Maximum update depth"
+          loop once the scene mounted (80+ <pointLight> children under
+          <Select> caused Selection to re-register selected objects every
+          render), which spammed the console hard enough to freeze the
+          browser / the whole machine.
 
-          <Select enabled>
-            <BillboardBulbs bulbs={bulbData} config={config} themePalette={activeTheme.bulbs} />
-          </Select>
-        </group>
+          The simpler legacy-style approach — one <Bloom> pass with a
+          luminance threshold — works here because the bulb shader is
+          emissive (vColor * baseEmissiveIntensity, ≥6) so bulbs always
+          sail over any sensible threshold, while the wire/sockets stay
+          below it under normal lighting. */}
+      <group ref={swayGroupRef}>
+        <WireRibbon
+          color={wireTheme.A}
+          curve={wireA}
+          segments={segmentCount}
+          thickness={config.WIRE_THICKNESS}
+        />
+        <WireRibbon
+          color={wireTheme.B}
+          curve={wireB}
+          segments={segmentCount}
+          thickness={config.WIRE_THICKNESS}
+        />
+        <BillboardBulbs bulbs={bulbData} config={config} themePalette={activeTheme.bulbs} />
+      </group>
 
-        {config.POSTFX_ENABLED ? (
-          <EffectComposer
-            multisampling={config.ANTIALIAS_ENABLED ? 8 : 0}
-            frameBufferType={HalfFloatType}
-          >
-            <SelectiveBloom
-              luminanceThreshold={config.BLOOM_THRESHOLD}
-              mipmapBlur
-              intensity={config.BLOOM_STRENGTH * Math.max(0.35, config.BLOOM_INTENSITY)}
-              radius={config.BLOOM_RADIUS}
-            />
-            {/*
-              AGX tone mapping preserves hue at high intensity — ACES Filmic
-              was collapsing saturated emissive bulbs (vColor * 6+) toward
-              white and spreading that white through bloom.
-            */}
-            <ToneMapping mode={ToneMappingMode.AGX} />
-            {/*
-              AlphaLift is ALWAYS mounted and we control it with `strength`
-              instead of conditional mounting. Reason: EffectComposer walks
-              its children through React.Children.toArray to build the pass
-              chain, and any non-Effect child (null/fragment/etc.) will be
-              fed to the composer which then re-enters its build path every
-              frame throwing — flooding the console so hard it can freeze
-              the tab. A strength-of-0 pass is a cheap one-sample fullscreen
-              no-op, which is far less costly than tearing the pass chain
-              apart every time the background toggle flips.
-            */}
-            <AlphaLift strength={config.BACKGROUND_ENABLED ? 0 : 1} />
-          </EffectComposer>
-        ) : null}
-      </Selection>
+      {config.POSTFX_ENABLED ? (
+        <EffectComposer
+          multisampling={config.ANTIALIAS_ENABLED ? 8 : 0}
+          frameBufferType={HalfFloatType}
+        >
+          <Bloom
+            luminanceThreshold={config.BLOOM_THRESHOLD}
+            mipmapBlur
+            intensity={config.BLOOM_STRENGTH * Math.max(0.35, config.BLOOM_INTENSITY)}
+            radius={config.BLOOM_RADIUS}
+          />
+          {/*
+            AGX tone mapping preserves hue at high intensity — ACES Filmic
+            was collapsing saturated emissive bulbs (vColor * 6+) toward
+            white and spreading that white through bloom.
+          */}
+          <ToneMapping mode={ToneMappingMode.AGX} />
+          {/*
+            AlphaLift stays permanently mounted and we control it with
+            `strength` instead of conditional mounting. EffectComposer walks
+            its children to build the pass chain; a null/fragment child
+            causes it to retry the build every frame and throw, which is
+            what froze the browser in the previous iteration.
+          */}
+          <AlphaLift strength={config.BACKGROUND_ENABLED ? 0 : 1} />
+        </EffectComposer>
+      ) : null}
 
       {config.STATS_ENABLED ? <Stats className="!left-4 !top-4" /> : null}
     </>
