@@ -1,0 +1,40 @@
+#!/usr/bin/env sh
+
+msg_file="$1"
+
+configured_model="$(git config --get melty.codexModel 2>/dev/null || true)"
+configured_machine="$(git config --get melty.commitMachine 2>/dev/null || true)"
+
+model="${CODEX_MODEL:-$configured_model}"
+machine="${CODEX_MACHINE:-$configured_machine}"
+
+if [ -n "$machine" ]; then
+  machine="$(printf '%s' "$machine" | tr '[:upper:]' '[:lower:]')"
+fi
+
+case "$machine" in
+  desktop|laptop) ;;
+  *) machine="" ;;
+esac
+
+needs_blank_line=0
+
+if [ -n "$model" ] && ! grep -Eiq '^Codex-Model:' "$msg_file"; then
+  needs_blank_line=1
+fi
+
+if [ -n "$machine" ] && ! grep -Eiq '^Commit-Machine:' "$msg_file"; then
+  needs_blank_line=1
+fi
+
+if [ "$needs_blank_line" -eq 1 ]; then
+  printf '\n' >> "$msg_file"
+fi
+
+if [ -n "$model" ] && ! grep -Eiq '^Codex-Model:' "$msg_file"; then
+  printf 'Codex-Model: %s\n' "$model" >> "$msg_file"
+fi
+
+if [ -n "$machine" ] && ! grep -Eiq '^Commit-Machine:' "$msg_file"; then
+  printf 'Commit-Machine: %s\n' "$machine" >> "$msg_file"
+fi
