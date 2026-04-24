@@ -2,16 +2,15 @@
 
 msg_file="$1"
 
-model_line="$(grep -Ei '^AI-Model:[[:space:]]*[^[:space:]].*$' "$msg_file" || true)"
-machine_line="$(grep -Ei '^Commit-Machine:[[:space:]]*[^[:space:]].*$' "$msg_file" || true)"
+subject="$(sed -n '1p' "$msg_file")"
+subject_metadata="$(printf '%s\n' "$subject" | grep -Ei '\[AI:[[:space:]]*[^]|]+[[:space:]]*\|[[:space:]]*Machine:[[:space:]]*[^]]+\]' || true)"
 
-if [ -z "$model_line" ] || [ -z "$machine_line" ]; then
+if [ -z "$subject_metadata" ]; then
   echo ""
   echo "Commit metadata is required."
   echo ""
-  echo "Add these trailers to the commit message:"
+  echo "Add model and machine context to the first commit line:"
   echo ""
-  echo "AI-Model: GPT-5 Codex"
-  echo "Commit-Machine: desktop"
+  echo "Commit subject [AI: GPT-5 Codex | Machine: desktop]"
   exit 1
 fi

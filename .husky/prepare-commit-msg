@@ -37,24 +37,27 @@ if [ -n "$machine" ]; then
   machine="$(printf '%s' "$machine" | tr '[:upper:]' '[:lower:]')"
 fi
 
-needs_blank_line=0
+subject="$(sed -n '1p' "$msg_file")"
+subject_metadata="$(printf '%s\n' "$subject" | grep -Ei '\[AI:[[:space:]]*[^]|]+[[:space:]]*\|[[:space:]]*Machine:[[:space:]]*[^]]+\]' || true)"
 
-if [ -n "$model" ] && ! grep -Eiq '^AI-Model:' "$msg_file"; then
-  needs_blank_line=1
-fi
-
-if [ -n "$machine" ] && ! grep -Eiq '^Commit-Machine:' "$msg_file"; then
-  needs_blank_line=1
-fi
-
-if [ "$needs_blank_line" -eq 1 ]; then
-  printf '\n' >> "$msg_file"
-fi
-
-if [ -n "$model" ] && ! grep -Eiq '^AI-Model:' "$msg_file"; then
-  printf 'AI-Model: %s\n' "$model" >> "$msg_file"
-fi
-
-if [ -n "$machine" ] && ! grep -Eiq '^Commit-Machine:' "$msg_file"; then
-  printf 'Commit-Machine: %s\n' "$machine" >> "$msg_file"
+if [ -z "$subject_metadata" ]; then
+  tmp_file="${msg_file}.ai-meta.$$"
+  awk -v model="$model" -v machine="$machine" '
+    BEGIN { updated = 0 }
+    updated == 0 && $0 ~ /^[[:space:]]*$/ {
+      next
+    }
+    updated == 0 && $0 !~ /^[[:space:]]*$/ {
+      print $0 " [AI: " model " | Machine: " machine "]"
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (updated == 0) {
+        print "Commit [AI: " model " | Machine: " machine "]"
+      }
+    }
+  ' "$msg_file" > "$tmp_file"
+  mv "$tmp_file" "$msg_file"
 fi
