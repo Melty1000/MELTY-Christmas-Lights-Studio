@@ -72,6 +72,7 @@ export const WIRE_CONTROL_LIMITS = {
 } as const;
 
 const WIRE_CONTROL_ENDPOINT_EPSILON = 0.0011;
+const WIRE_SIMPLE_SPACING_RATIO = 0.03;
 
 export const configSchema = z.object({
   ANIMATION_STYLE: z.enum(ANIMATION_STYLES).default('SOFT_TWINKLE'),
@@ -186,6 +187,10 @@ const WIRE_KEYS = ['WIRE_THICKNESS', 'WIRE_SEPARATION', 'WIRE_TWISTS'] as const;
 
 type WireKey = (typeof WIRE_KEYS)[number];
 type WireValues = Pick<Config, WireKey>;
+export interface SimpleWireControls {
+  weight: number;
+  density: number;
+}
 
 const WIRE_CONTROL_PERCENT_MIN = 0;
 const WIRE_CONTROL_PERCENT_MAX = 100;
@@ -419,6 +424,14 @@ export function wireThicknessFromControlValue(value: number): number {
   ).toFixed(3));
 }
 
+export function wireWeightToRawThickness(weight: number): number {
+  return wireThicknessFromControlValue(weight);
+}
+
+export function rawThicknessToWireWeight(thickness: number): number {
+  return wireThicknessToControlValue(thickness);
+}
+
 export function wireSeparationToControlValue(
   separation: number,
   thickness: number,
@@ -452,6 +465,26 @@ export function wireTwistIntentFromControlValue(value: number): number {
     (clampWireControl(value) / WIRE_CONTROL_PERCENT_MAX)
       * WIRE_CONTROL_LIMITS.TWISTS_MAX,
   );
+}
+
+export function wireDensityToRawIntent(density: number): number {
+  return wireTwistIntentFromControlValue(density);
+}
+
+export function deriveWireFromSimpleControls(controls: SimpleWireControls): WireValues {
+  const thickness = wireWeightToRawThickness(controls.weight);
+  const twistIntent = wireDensityToRawIntent(controls.density);
+  const separationBounds = wireSeparationBoundsFor(thickness, twistIntent);
+  const separation = Number((
+    separationBounds.min
+    + WIRE_SIMPLE_SPACING_RATIO * (separationBounds.max - separationBounds.min)
+  ).toFixed(3));
+
+  return normalizeWireForSafeConfig({
+    WIRE_THICKNESS: thickness,
+    WIRE_SEPARATION: separation,
+    WIRE_TWISTS: twistIntent,
+  });
 }
 
 export function wireTwistsToControlValue(

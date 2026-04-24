@@ -1,4 +1,6 @@
 import { CatmullRomCurve3, Curve, Vector3 } from 'three';
+import { socketWireJoinDepth } from '../bulbMetrics.ts';
+import { sampleBulbGuide } from './bulbGuide.ts';
 
 const _curveNormal = new Vector3();
 const _curveBinormal = new Vector3();
@@ -7,9 +9,7 @@ const _finalPos = new Vector3();
 const _tempVec = new Vector3();
 const _dipDir = new Vector3();
 const _targetDelta = new Vector3();
-const CONNECT_DIP_BULB_SCALE = 0.58;
 const CONNECT_DIP_OFFSET_SCALE = 0.35;
-const CONNECT_DIP_EXTRA_SEPARATION_SCALE = 0.35;
 
 export class TwistedCurve extends Curve<Vector3> {
   baseCurve: CatmullRomCurve3;
@@ -26,6 +26,7 @@ export class TwistedCurve extends Curve<Vector3> {
   socketRadius: number;
   bypassRadius: number;
   bulbTarget: Vector3 | null;
+  bulbGuidePoints: Vector3[] | undefined;
   /** Z tuck at bulb joins (larger for thin wire); set from WIRE_THICKNESS in WireRibbon. */
   connectZBack = 0.04;
 
@@ -39,6 +40,7 @@ export class TwistedCurve extends Curve<Vector3> {
     bulbScale = 0.1,
     isBillboard = false,
     bulbTarget?: Vector3,
+    bulbGuidePoints?: Vector3[],
     separationCompensation = 0,
   ) {
     super();
@@ -51,12 +53,12 @@ export class TwistedCurve extends Curve<Vector3> {
     this.bulbScale = bulbScale;
     this.isBillboard = isBillboard;
     this.bulbTarget = bulbTarget?.clone() ?? null;
+    this.bulbGuidePoints = bulbGuidePoints?.map((point) => point.clone());
     this.pinchRange = 0.003 + bulbScale * 0.015;
     const baseDipOffset = Math.max(0, offset - separationCompensation);
     this.dipDepth = (
-      CONNECT_DIP_BULB_SCALE * bulbScale
+      socketWireJoinDepth(bulbScale, separationCompensation)
       + CONNECT_DIP_OFFSET_SCALE * baseDipOffset
-      + CONNECT_DIP_EXTRA_SEPARATION_SCALE * separationCompensation
     );
     this.socketRadius = offset;
     this.bypassRadius = offset;
@@ -136,7 +138,7 @@ export class TwistedCurve extends Curve<Vector3> {
       _dipDir.set(-tangent.y, tangent.x, 0);
 
       if (this.bulbTarget) {
-        _targetDelta.copy(this.bulbTarget).sub(basePoint);
+        sampleBulbGuide(t, basePoint, this.bulbTarget, this.bulbGuidePoints, _targetDelta);
         if (_dipDir.dot(_targetDelta) < 0) {
           _dipDir.multiplyScalar(-1);
         }

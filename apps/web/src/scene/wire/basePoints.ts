@@ -9,6 +9,7 @@ export interface LightLayoutViewport {
 export interface LightLayoutPath {
   id: string;
   points: Vector3[];
+  bulbGuidePoints?: Vector3[];
   spanCount: number;
   closed?: boolean;
   bulbDirectionY: -1 | 1;
@@ -193,7 +194,7 @@ function edgePath(
 ): LightLayoutPath {
   return {
     id,
-    points: buildSaggedSegments(segments, spansPerSegment, sagAmplitude, tension),
+    ...buildSaggedSegments(segments, spansPerSegment, sagAmplitude, tension),
     spanCount: Math.max(1, segments.length * spansPerSegment),
     bulbDirectionY,
     bulbTarget,
@@ -205,22 +206,24 @@ function buildSaggedSegments(
   spansPerSegment: number,
   sagAmplitude: number,
   tension: number,
-): Vector3[] {
+): Pick<LightLayoutPath, 'points' | 'bulbGuidePoints'> {
   const points: Vector3[] = [];
+  const bulbGuidePoints: Vector3[] = [];
   for (const segment of segments) {
     for (let span = 0; span < spansPerSegment; span++) {
       const startT = span / spansPerSegment;
       const endT = (span + 1) / spansPerSegment;
       _lerpA.copy(segment.from).lerp(segment.to, startT);
       _lerpB.copy(segment.from).lerp(segment.to, endT);
-      appendSaggedSpan(points, _lerpA, _lerpB, segment.sagDir, sagAmplitude, tension);
+      appendSaggedSpan(points, bulbGuidePoints, _lerpA, _lerpB, segment.sagDir, sagAmplitude, tension);
     }
   }
-  return points;
+  return { points, bulbGuidePoints };
 }
 
 function appendSaggedSpan(
   points: Vector3[],
+  bulbGuidePoints: Vector3[],
   from: Vector3,
   to: Vector3,
   sagDir: Vector3,
@@ -229,6 +232,7 @@ function appendSaggedSpan(
 ): void {
   if (points.length === 0) {
     points.push(from.clone());
+    bulbGuidePoints.push(sagDir.clone());
   }
 
   const clampedTension = Math.max(-1, Math.min(1, tension));
@@ -243,9 +247,11 @@ function appendSaggedSpan(
     const dropAmount = parabola * (1 - blendFactor) + catenary * blendFactor;
     _point.copy(from).lerp(to, t).addScaledVector(sagDir, easedSag * dropAmount);
     points.push(_point.clone());
+    bulbGuidePoints.push(sagDir.clone());
   }
 
   points.push(to.clone());
+  bulbGuidePoints.push(sagDir.clone());
 }
 
 function drapePath(
@@ -262,6 +268,7 @@ function drapePath(
   const top = bounds.top - bounds.height * 0.08 * phase;
   const depth = bounds.height * (0.18 + sagAmplitude * 0.06) * depthScale;
   const points: Vector3[] = [];
+  const bulbGuidePoints: Vector3[] = [];
   const clampedTension = Math.max(-1, Math.min(1, tension));
   const tensionLift = Math.max(0, clampedTension) * 0.45;
   const startX = bounds.left + panelWidth * 0.5 * phase;
@@ -269,6 +276,7 @@ function drapePath(
   const adjustedPanelWidth = (endX - startX) / panels;
 
   points.push(new Vector3(startX, top, 0));
+  bulbGuidePoints.push(new Vector3(0, -1, 0));
   for (let panel = 0; panel < panels; panel++) {
     const x0 = startX + panel * adjustedPanelWidth;
     const x1 = startX + (panel + 1) * adjustedPanelWidth;
@@ -277,12 +285,14 @@ function drapePath(
       const drop = 4 * t * (1 - t);
       const y = top - depth * drop * (1 - tensionLift);
       points.push(new Vector3(x0 + (x1 - x0) * t, y, 0));
+      bulbGuidePoints.push(new Vector3(0, -1, 0));
     }
   }
 
   return {
     id,
     points,
+    bulbGuidePoints,
     spanCount: panels,
     bulbDirectionY: -1,
     bulbTarget: new Vector3(bounds.centerX, bounds.centerY, 0),

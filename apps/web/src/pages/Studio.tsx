@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
   ANIMATION_STYLES,
+  deriveWireFromSimpleControls,
   LIGHT_LAYOUT_NAMES,
+  rawThicknessToWireWeight,
   SOCKET_THEME_NAMES,
   THEME_NAMES,
   THEMES,
@@ -12,7 +14,6 @@ import {
   wireSeparationFromControlValue,
   wireSeparationToControlValue,
   wireThicknessFromControlValue,
-  wireThicknessToControlValue,
   wireTwistIntentFromControlValue,
   wireTwistsFromControlValue,
   wireTwistsToControlValue,
@@ -241,13 +242,15 @@ function ThemeSection() {
 // Wires header shows a live pin-count hint, so it subscribes to just that
 // one number. Field re-renders are scoped to the header badge only.
 interface WireControlUi {
+  weight: number;
+  density: number;
   thickness: number;
   separation: number;
   twists: number;
 }
 
 interface LocalWireWrite {
-  raw: ReturnType<typeof wireUiToRaw>;
+  raw: ReturnType<typeof wireAdvancedUiToRaw>;
   expiresAt: number;
   settled: boolean;
 }
@@ -272,7 +275,7 @@ function WiresSection() {
   useEffect(
     () => {
       const localWrite = lastLocalWireWrite.current;
-      const rawFromUi = wireUiToRaw(wireUi);
+      const rawFromUi = wireAdvancedUiToRaw(wireUi);
 
       if (localWrite && wireRawMatches(localWrite.raw, wireControls)) {
         localWrite.settled = true;
@@ -296,72 +299,133 @@ function WiresSection() {
     [wireControls, wireUi],
   );
 
-  const patchWireUi = useCallback(
-    (nextUi: Partial<WireControlUi>) => {
-      const stableUi = normalizeWireUi({ ...wireUiRef.current, ...nextUi });
-      const nextRaw = wireUiToRaw(stableUi);
+  const patchWireRaw = useCallback(
+    (
+      nextRaw: ReturnType<typeof wireAdvancedUiToRaw>,
+      nextUi: WireControlUi,
+    ) => {
       lastLocalWireWrite.current = {
         raw: nextRaw,
         expiresAt: Date.now() + LOCAL_WIRE_WRITE_GRACE_MS,
         settled: false,
       };
-      wireUiRef.current = stableUi;
-      setWireUi(stableUi);
+      wireUiRef.current = nextUi;
+      setWireUi(nextUi);
       void patch(nextRaw);
     },
     [patch],
   );
 
+  const patchSimpleWireUi = useCallback(
+    (nextUi: Partial<Pick<WireControlUi, 'weight' | 'density'>>) => {
+      const stableUi = normalizeWireUi({ ...wireUiRef.current, ...nextUi });
+      const nextRaw = wireSimpleUiToRaw(stableUi);
+      patchWireRaw(nextRaw, {
+        ...wireRawToUi(nextRaw),
+        weight: stableUi.weight,
+        density: stableUi.density,
+      });
+    },
+    [patchWireRaw],
+  );
+
+  const patchAdvancedWireUi = useCallback(
+    (nextUi: Partial<Pick<WireControlUi, 'thickness' | 'separation' | 'twists'>>) => {
+      const stableUi = normalizeWireUi({ ...wireUiRef.current, ...nextUi });
+      const nextRaw = wireAdvancedUiToRaw(stableUi);
+      patchWireRaw(nextRaw, {
+        ...wireRawToUi(nextRaw),
+        thickness: stableUi.thickness,
+        separation: stableUi.separation,
+        twists: stableUi.twists,
+      });
+    },
+    [patchWireRaw],
+  );
+
+  const handleWeightChange = useCallback(
+    (value: number) => {
+      patchSimpleWireUi({ weight: value });
+    },
+    [patchSimpleWireUi],
+  );
+  const handleDensityChange = useCallback(
+    (value: number) => {
+      patchSimpleWireUi({ density: value });
+    },
+    [patchSimpleWireUi],
+  );
   const handleThicknessChange = useCallback(
     (value: number) => {
-      patchWireUi({ thickness: value });
+      patchAdvancedWireUi({ thickness: value });
     },
-    [patchWireUi],
+    [patchAdvancedWireUi],
   );
   const handleSeparationChange = useCallback(
     (value: number) => {
-      patchWireUi({ separation: value });
+      patchAdvancedWireUi({ separation: value });
     },
-    [patchWireUi],
+    [patchAdvancedWireUi],
   );
   const handleTwistsChange = useCallback(
     (value: number) => {
-      patchWireUi({ twists: value });
+      patchAdvancedWireUi({ twists: value });
     },
-    [patchWireUi],
+    [patchAdvancedWireUi],
   );
 
   return (
-    <CollapsibleSection id="wires" title="Wires" hint={`${Math.max(wireControls.NUM_PINS - 1, 0)} spans`}>
-      <BoundRange field="NUM_PINS" label="Pin points" min={2} max={20} step={1} round />
-      <BoundRange field="LIGHTS_PER_SEGMENT" label="Lights / span" min={1} max={100} step={1} round />
-      <BoundRange field="SAG_AMPLITUDE" label="Sag" min={0} max={2} step={0.01} />
-      <BoundRange field="TENSION" label="Tension" min={-1} max={1} step={0.01} />
-      <RangeField
-        label="Thickness"
-        min={0}
-        max={100}
-        step={1}
-        value={wireUi.thickness}
-        onChange={handleThicknessChange}
-      />
-      <RangeField
-        label="Separation"
-        min={0}
-        max={100}
-        step={1}
-        value={wireUi.separation}
-        onChange={handleSeparationChange}
-      />
-      <RangeField
-        label="Twists"
-        min={0}
-        max={100}
-        step={1}
-        value={wireUi.twists}
-        onChange={handleTwistsChange}
-      />
-    </CollapsibleSection>
+    <>
+      <CollapsibleSection id="wires" title="Wires" hint={`${Math.max(wireControls.NUM_PINS - 1, 0)} spans`}>
+        <BoundRange field="NUM_PINS" label="Pin points" min={2} max={20} step={1} round />
+        <BoundRange field="LIGHTS_PER_SEGMENT" label="Lights / span" min={1} max={100} step={1} round />
+        <BoundRange field="SAG_AMPLITUDE" label="Sag" min={0} max={2} step={0.01} />
+        <BoundRange field="TENSION" label="Tension" min={-1} max={1} step={0.01} />
+        <RangeField
+          label="Wire Weight"
+          min={0}
+          max={100}
+          step={1}
+          value={wireUi.weight}
+          onChange={handleWeightChange}
+        />
+        <RangeField
+          label="Twist Density"
+          min={0}
+          max={100}
+          step={1}
+          value={wireUi.density}
+          onChange={handleDensityChange}
+        />
+      </CollapsibleSection>
+
+      <CollapsibleSection id="advanced-wire-tuning" title="Advanced Wire Tuning" hint="fine tune">
+        <RangeField
+          label="Thickness"
+          min={0}
+          max={100}
+          step={1}
+          value={wireUi.thickness}
+          onChange={handleThicknessChange}
+        />
+        <RangeField
+          label="Separation"
+          min={0}
+          max={100}
+          step={1}
+          value={wireUi.separation}
+          onChange={handleSeparationChange}
+        />
+        <RangeField
+          label="Twists"
+          min={0}
+          max={100}
+          step={1}
+          value={wireUi.twists}
+          onChange={handleTwistsChange}
+        />
+      </CollapsibleSection>
+    </>
   );
 }
 
@@ -371,7 +435,13 @@ function wireRawToUi(wire: {
   WIRE_TWISTS: number;
 }): WireControlUi {
   return {
-    thickness: wireThicknessToControlValue(wire.WIRE_THICKNESS),
+    weight: rawThicknessToWireWeight(wire.WIRE_THICKNESS),
+    density: wireTwistsToControlValue(
+      wire.WIRE_TWISTS,
+      wire.WIRE_THICKNESS,
+      wire.WIRE_SEPARATION,
+    ),
+    thickness: rawThicknessToWireWeight(wire.WIRE_THICKNESS),
     separation: wireSeparationToControlValue(
       wire.WIRE_SEPARATION,
       wire.WIRE_THICKNESS,
@@ -385,7 +455,14 @@ function wireRawToUi(wire: {
   };
 }
 
-function wireUiToRaw(ui: WireControlUi) {
+function wireSimpleUiToRaw(ui: WireControlUi) {
+  return deriveWireFromSimpleControls({
+    weight: ui.weight,
+    density: ui.density,
+  });
+}
+
+function wireAdvancedUiToRaw(ui: WireControlUi) {
   const thickness = wireThicknessFromControlValue(ui.thickness);
   const twistIntent = wireTwistIntentFromControlValue(ui.twists);
   const separation = wireSeparationFromControlValue(ui.separation, thickness, twistIntent);
@@ -398,7 +475,7 @@ function wireUiToRaw(ui: WireControlUi) {
 }
 
 function wireRawMatches(
-  a: ReturnType<typeof wireUiToRaw>,
+  a: ReturnType<typeof wireAdvancedUiToRaw>,
   b: {
     WIRE_THICKNESS: number;
     WIRE_SEPARATION: number;
@@ -414,6 +491,8 @@ function wireRawMatches(
 
 function normalizeWireUi(ui: WireControlUi): WireControlUi {
   return {
+    weight: normalizeWireControlPercent(ui.weight),
+    density: normalizeWireControlPercent(ui.density),
     thickness: normalizeWireControlPercent(ui.thickness),
     separation: normalizeWireControlPercent(ui.separation),
     twists: normalizeWireControlPercent(ui.twists),

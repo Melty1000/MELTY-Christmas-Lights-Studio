@@ -20,6 +20,12 @@ import { createBulbAnimationState, stepBulbAnimation, type BulbAnimationState } 
 import { beginPointSpillFrame, pushPointSpill } from './wire/pointSpillState.ts';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 import { getBulbPalette } from './utils.ts';
+import {
+  BILLBOARD_OFFSETS,
+  SEPARATION_COMPENSATION_SCALE,
+  SOCKET_SHAPE_TOP_Y,
+  type BillboardInstanceOffset,
+} from './bulbMetrics.ts';
 
 export interface BillboardBulbDatum {
   baseColorHex: number;
@@ -46,11 +52,6 @@ interface BillboardGeometries {
   filament: ShapeGeometry;
   socket: ShapeGeometry;
   halo: PlaneGeometry;
-}
-
-interface BillboardInstanceOffset {
-  y: number;
-  z: number;
 }
 
 const _glassDummy = new Object3D();
@@ -103,12 +104,6 @@ const POINT_LIGHT_DECAY = 2;
 // wire geometry. ~0.3 in legacy local space; here we scale with BULB_SCALE.
 const POINT_LIGHT_VERTICAL_OFFSET = 0.3;
 
-const BILLBOARD_OFFSETS = {
-  filament: { y: -2.2, z: 0.04 } satisfies BillboardInstanceOffset,
-  glass: { y: -1.4, z: 0.05 } satisfies BillboardInstanceOffset,
-  socket: { y: -1.75, z: 0.1 } satisfies BillboardInstanceOffset,
-} as const;
-
 const HALO_CENTER_OFFSET_Y = -2.7;
 const HALO_DEPTH_OFFSET = -0.16;
 const HALO_BASE_SCALE = 4.5;
@@ -117,7 +112,6 @@ const HALO_MAX_INTENSITY = 1.15;
 const HALO_INTENSITY_FLOOR = 0.32;
 const HALO_RESPONSE_CURVE = 3.2;
 const BULB_OFF_INTENSITY_EPSILON = 0.001;
-const SEPARATION_COMPENSATION_SCALE = 0.9;
 
 export function BillboardBulbs({
   bulbs,
@@ -575,8 +569,8 @@ function createBillboardGeometries(): BillboardGeometries {
 
   const socketShape = new Shape();
   socketShape.moveTo(-0.48, 0);
-  socketShape.bezierCurveTo(-0.47, 0.4, -0.4, 0.8, -0.15, 1.15);
-  socketShape.lineTo(0.15, 1.15);
+  socketShape.bezierCurveTo(-0.47, 0.4, -0.4, 0.8, -0.15, SOCKET_SHAPE_TOP_Y);
+  socketShape.lineTo(0.15, SOCKET_SHAPE_TOP_Y);
   socketShape.bezierCurveTo(0.4, 0.8, 0.47, 0.4, 0.48, 0);
   socketShape.lineTo(-0.48, 0);
 

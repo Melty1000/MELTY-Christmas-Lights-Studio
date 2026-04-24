@@ -39,12 +39,15 @@ import { generateLightLayoutPaths, type LightLayoutPath } from './wire/basePoint
 import { allocateRibbonBuffers, writeRibbonPositions } from './wire/buildRibbonGeometry.ts';
 import { ribbonSegmentCount } from './wire/buildTubeGeometry.ts';
 import { createWireMaterial } from './wire/createWireMaterial.ts';
+import { sampleBulbGuide } from './wire/bulbGuide.ts';
 import { pointSpillCol, pointSpillCount, pointSpillPos } from './wire/pointSpillState.ts';
 import { TwistedCurve } from './wire/TwistedCurve.ts';
 import { AlphaLift } from './effects/AlphaLift.tsx';
+import { socketJoinZBackLimit } from './bulbMetrics.ts';
 
 const _K_LIGHT_TO = new Vector3();
 const _F_LIGHT_TO = new Vector3();
+const _bulbGuide = new Vector3();
 
 const BACKGROUND_COLOR = '#08111d';
 const ORTHO_VIEW_HEIGHT = 18;
@@ -434,10 +437,12 @@ function LightString({
       structural.BULB_SCALE,
       true,
       path.bulbTarget,
+      path.bulbGuidePoints,
       separationCompensation,
     ),
     [
       baseCurve,
+      path.bulbGuidePoints,
       path.bulbTarget,
       structural.BULB_SCALE,
       wireTwists,
@@ -459,10 +464,12 @@ function LightString({
       structural.BULB_SCALE,
       true,
       path.bulbTarget,
+      path.bulbGuidePoints,
       separationCompensation,
     ),
     [
       baseCurve,
+      path.bulbGuidePoints,
       path.bulbTarget,
       structural.BULB_SCALE,
       wireTwists,
@@ -476,7 +483,7 @@ function LightString({
   const bulbData = useMemo(() => (
     locations.map((t, index) => {
       const point = baseCurve.getPoint(t);
-      const direction = computeBulbDirection(baseCurve, t, point, path.bulbTarget);
+      const direction = computeBulbDirection(baseCurve, t, point, path.bulbTarget, path.bulbGuidePoints);
       const socketColorHex = structural.SOCKET_THEME === 'WIRE_MATCH'
         ? (index % 2 === 0 ? wireTheme.A : wireTheme.B)
         : (SOCKET_THEMES[structural.SOCKET_THEME] ?? wireTheme.A);
@@ -488,7 +495,7 @@ function LightString({
         socketColorHex,
       };
     })
-  ), [activeTheme.bulbs, baseCurve, path.bulbTarget, structural.SOCKET_THEME, locations, wireTheme.A, wireTheme.B]);
+  ), [activeTheme.bulbs, baseCurve, path.bulbGuidePoints, path.bulbTarget, structural.SOCKET_THEME, locations, wireTheme.A, wireTheme.B]);
 
   const segmentCount = ribbonSegmentCount(wireTwists);
 
@@ -567,14 +574,14 @@ function computeBulbDirection(
   t: number,
   point: Vector3,
   target: Vector3,
+  guidePoints?: Vector3[],
 ): [number, number, number] {
   const tangent = curve.getTangent(t).normalize();
   let x = -tangent.y;
   let y = tangent.x;
-  const toTargetX = target.x - point.x;
-  const toTargetY = target.y - point.y;
+  const guide = sampleBulbGuide(t, point, target, guidePoints, _bulbGuide);
 
-  if ((x * toTargetX) + (y * toTargetY) < 0) {
+  if ((x * guide.x) + (y * guide.y) < 0) {
     x = -x;
     y = -y;
   }
@@ -690,8 +697,9 @@ function WireRibbon({
     const tW = c.WIRE_THICKNESS;
     // Zoomed out = worse depth; scale tuck and socket alignment with camera distance.
     const distScale = 1.0 + 0.055 * Math.max(0, c.CAMERA_DISTANCE - 9);
-    const zBack = (0.04 + 0.3 * Math.min(1.75, 0.03 / (tW + 0.006))) * distScale;
-    const zKey = `${zBack.toFixed(6)}|${distScale.toFixed(3)}`;
+    const rawZBack = (0.04 + 0.3 * Math.min(1.75, 0.03 / (tW + 0.006))) * distScale;
+    const zBack = Math.min(rawZBack, socketJoinZBackLimit(c.BULB_SCALE));
+    const zKey = `${zBack.toFixed(6)}|${distScale.toFixed(3)}|${c.BULB_SCALE.toFixed(4)}`;
     if (lastConnectZBack.current !== zKey) {
       lastConnectZBack.current = zKey;
       curve.connectZBack = zBack;
