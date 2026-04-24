@@ -24,16 +24,16 @@ This overlay is designed to be used as an **OBS Browser Source**. You can also o
    https://lights.melty.lol
    ```
 5. Set **Width** to your stream width (e.g., 1920)
-6. Set **Height** to your stream height **+ 100 pixels**
-   - Streaming at 1920×1080? Use **1920 × 1180**
-   - Streaming at 2560×1440? Use **2560 × 1540**
-   - Streaming at 1280×720? Use **1280 × 820**
+6. Set **Height** to your stream height
+   - Streaming at 1920×1080? Use **1920 × 1080**
+   - Streaming at 2560×1440? Use **2560 × 1440**
+   - Streaming at 1280×720? Use **1280 × 720**
 7. Set the **FPS** to match your stream framerate (30 or 60)
 8. ✅ Check **"Shutdown source when not visible"** (saves your pc from frying when you're lights are not being shown on stream)
 9. ✅ Check **"Refresh browser when scene becomes active"** (keeps things fresh)
 10. Click **OK**
 
-> **Why +100px height?** The "Show UI" button lives at the bottom of the frame. The extra height keeps it accessible for you, but hidden from your viewers!
+> **Auto-framing:** Version 2026 uses Light Layouts that attach the lights to the browser source viewport. Match the OBS Browser Source size to your stream canvas and the selected layout will fit the source automatically across common resolutions and aspect ratios.
 
 # 🎁 Customizing Your Lights!
 

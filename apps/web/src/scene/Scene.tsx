@@ -13,6 +13,7 @@ import {
   HalfFloatType,
   type HemisphereLight,
   type Mesh,
+  type OrthographicCamera,
   NoToneMapping,
   type ShaderMaterial,
   Color,
@@ -23,12 +24,18 @@ import {
   EffectPass,
   type EffectComposer as EffectComposerImpl,
 } from 'postprocessing';
-import { SOCKET_THEMES, THEMES, WIRE_THEMES, type Config } from '@melty/shared';
+import {
+  DEFAULT_CONFIG,
+  SOCKET_THEMES,
+  THEMES,
+  WIRE_THEMES,
+  type Config,
+} from '@melty/shared';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 import { BillboardBulbs } from './BillboardBulbs.tsx';
 import { SnowField } from './SnowField.tsx';
-import { bulbTLocations } from './utils.ts';
-import { generateBasePoints } from './wire/basePoints.ts';
+import { bulbTLocationsForSpans } from './utils.ts';
+import { generateLightLayoutPaths, type LightLayoutPath } from './wire/basePoints.ts';
 import { allocateRibbonBuffers, writeRibbonPositions } from './wire/buildRibbonGeometry.ts';
 import { ribbonSegmentCount } from './wire/buildTubeGeometry.ts';
 import { createWireMaterial } from './wire/createWireMaterial.ts';
@@ -40,15 +47,17 @@ const _K_LIGHT_TO = new Vector3();
 const _F_LIGHT_TO = new Vector3();
 
 const BACKGROUND_COLOR = '#08111d';
-
-function computeStringFocusCentroid(points: Vector3[]): Vector3 {
-  const c = new Vector3();
-  for (const p of points) {
-    c.add(p);
-  }
-  c.divideScalar(Math.max(1, points.length));
-  return c;
-}
+const ORTHO_VIEW_HEIGHT = 18;
+const ORTHO_BASE_DISTANCE = 22;
+const ORTHO_CAMERA_DISTANCE = 100;
+const CAMERA_FORWARD = new Vector3(0, 4.8, -15).normalize();
+const ORTHO_SCREEN_Y_SCALE = Math.sqrt(1 - CAMERA_FORWARD.y * CAMERA_FORWARD.y);
+const BLOOM_INTENSITY_CEILING = 2.4;
+const BLOOM_RESPONSE_CURVE = 1.1;
+const POSTPROCESS_BLOOM_SCALE = 0.06;
+const BLOOM_THRESHOLD_FLOOR = 0.96;
+const _cameraTarget = new Vector3();
+const _cameraEye = new Vector3();
 
 // ---------------------------------------------------------------------------
 // Structural vs. continuous config
@@ -73,7 +82,13 @@ interface StructuralConfig {
   SAG_AMPLITUDE: number;
   TENSION: number;
   WIRE_SEPARATION: number;
+  WIRE_THICKNESS: number;
   WIRE_TWISTS: number;
+  LIGHT_LAYOUT: Config['LIGHT_LAYOUT'];
+  LAYOUT_MARGIN: number;
+  LAYOUT_SCALE: number;
+  LAYOUT_OFFSET_X: number;
+  LAYOUT_OFFSET_Y: number;
   WIRE_THEME: Config['WIRE_THEME'];
   SOCKET_THEME: Config['SOCKET_THEME'];
   ACTIVE_THEME: Config['ACTIVE_THEME'];
@@ -102,7 +117,13 @@ function selectStructural(state: { config: Config }): StructuralConfig {
     SAG_AMPLITUDE: c.SAG_AMPLITUDE,
     TENSION: c.TENSION,
     WIRE_SEPARATION: c.WIRE_SEPARATION,
+    WIRE_THICKNESS: c.WIRE_THICKNESS,
     WIRE_TWISTS: c.WIRE_TWISTS,
+    LIGHT_LAYOUT: c.LIGHT_LAYOUT,
+    LAYOUT_MARGIN: c.LAYOUT_MARGIN,
+    LAYOUT_SCALE: c.LAYOUT_SCALE,
+    LAYOUT_OFFSET_X: c.LAYOUT_OFFSET_X,
+    LAYOUT_OFFSET_Y: c.LAYOUT_OFFSET_Y,
     WIRE_THEME: c.WIRE_THEME,
     SOCKET_THEME: c.SOCKET_THEME,
     ACTIVE_THEME: c.ACTIVE_THEME,
@@ -134,16 +155,14 @@ export function Scene() {
   return (
     <Canvas
       key={`scene-${structural.ANTIALIAS_ENABLED ? 'aa' : 'noaa'}`}
+      orthographic
       camera={{
-        far: 200,
-        fov: 40,
-        // Slightly higher near plane improves depth precision for thin,
-        // intersecting geometry (wires) without affecting our framing.
-        near: 0.18,
-        // Seed position only — CameraPose takes over on mount and updates
-        // the camera imperatively every frame, so changing CAMERA_* no
-        // longer causes React to re-render this tree.
-        position: [0, 1.8, 15],
+        far: 500,
+        near: 0.1,
+        position: [0, 0, ORTHO_CAMERA_DISTANCE],
+        // CameraPose derives the real zoom from canvas height so identical
+        // aspect ratios frame the same at 720p, 1080p, 1440p, and OBS sizes.
+        zoom: 60,
       }}
       dpr={[1, 2]}
       gl={{
@@ -168,6 +187,7 @@ export function Scene() {
 function SceneContent({ structural }: { structural: StructuralConfig }) {
   const activeTheme = THEMES[structural.ACTIVE_THEME];
   const wireTheme = WIRE_THEMES[structural.WIRE_THEME];
+  const size = useThree((state) => state.size);
   const swayGroupRef = useRef<Group>(null);
   const ambientRef = useRef<AmbientLight>(null);
   const keyLightRef = useRef<DirectionalLight>(null);
@@ -185,7 +205,7 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
   // zero React work on slider drag.
   const composerRef = useRef<EffectComposerImpl>(null);
   const bloomEffectRef = useRef<BloomEffect | null>(null);
-  const { gl } = useThree();
+  const gl = useThree((state) => state.gl);
 
   // Keep renderer tone mapping in sync with the PostFX toggle. With PostFX on,
   // the composer applies tone mapping after Bloom has worked on linear HDR
@@ -197,97 +217,39 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
     gl.toneMappingExposure = 1.2;
   }, [gl, structural.POSTFX_ENABLED]);
 
-  const basePoints = useMemo(
+  const layoutViewport = useMemo(() => {
+    const aspect = size.height > 0 ? size.width / size.height : 16 / 9;
+    return {
+      width: ORTHO_VIEW_HEIGHT * aspect,
+      height: ORTHO_VIEW_HEIGHT / ORTHO_SCREEN_Y_SCALE,
+    };
+  }, [size.height, size.width]);
+
+  const layoutPaths = useMemo(
     () =>
-      generateBasePoints(
-        structural.NUM_PINS,
-        structural.SAG_AMPLITUDE,
-        structural.TENSION,
-        structural.WIRE_TWISTS,
-      ),
-    [structural.NUM_PINS, structural.SAG_AMPLITUDE, structural.TENSION, structural.WIRE_TWISTS],
-  );
-
-  const stringFocus = useMemo(() => computeStringFocusCentroid(basePoints), [basePoints]);
-
-  const baseCurve = useMemo(
-    () => new CatmullRomCurve3(basePoints, false, 'centripetal'),
-    [basePoints],
-  );
-
-  const locations = useMemo(
-    () => bulbTLocations(structural.NUM_PINS, structural.LIGHTS_PER_SEGMENT),
-    [structural.NUM_PINS, structural.LIGHTS_PER_SEGMENT],
-  );
-
-  const evenLocations = useMemo(
-    () => locations.filter((_, index) => index % 2 === 0),
-    [locations],
-  );
-
-  const oddLocations = useMemo(
-    () => locations.filter((_, index) => index % 2 !== 0),
-    [locations],
-  );
-
-  const wireA = useMemo(
-    () => new TwistedCurve(
-      baseCurve,
-      structural.WIRE_SEPARATION,
-      structural.WIRE_TWISTS,
-      0,
-      evenLocations,
-      oddLocations,
-      structural.BULB_SCALE,
-      true,
-    ),
+      generateLightLayoutPaths({
+        layout: structural.LIGHT_LAYOUT,
+        viewport: layoutViewport,
+        numPins: structural.NUM_PINS,
+        sagAmplitude: structural.SAG_AMPLITUDE,
+        tension: structural.TENSION,
+        margin: structural.LAYOUT_MARGIN,
+        scale: structural.LAYOUT_SCALE,
+        offsetX: structural.LAYOUT_OFFSET_X,
+        offsetY: structural.LAYOUT_OFFSET_Y,
+      }),
     [
-      baseCurve,
-      structural.BULB_SCALE,
-      structural.WIRE_SEPARATION,
-      structural.WIRE_TWISTS,
-      evenLocations,
-      oddLocations,
+      layoutViewport,
+      structural.LIGHT_LAYOUT,
+      structural.LAYOUT_MARGIN,
+      structural.LAYOUT_OFFSET_X,
+      structural.LAYOUT_OFFSET_Y,
+      structural.LAYOUT_SCALE,
+      structural.NUM_PINS,
+      structural.SAG_AMPLITUDE,
+      structural.TENSION,
     ],
   );
-
-  const wireB = useMemo(
-    () => new TwistedCurve(
-      baseCurve,
-      structural.WIRE_SEPARATION,
-      structural.WIRE_TWISTS,
-      Math.PI,
-      oddLocations,
-      evenLocations,
-      structural.BULB_SCALE,
-      true,
-    ),
-    [
-      baseCurve,
-      structural.BULB_SCALE,
-      structural.WIRE_SEPARATION,
-      structural.WIRE_TWISTS,
-      evenLocations,
-      oddLocations,
-    ],
-  );
-
-  const bulbData = useMemo(() => (
-    locations.map((t, index) => {
-      const point = baseCurve.getPoint(t);
-      const socketColorHex = structural.SOCKET_THEME === 'WIRE_MATCH'
-        ? (index % 2 === 0 ? wireTheme.A : wireTheme.B)
-        : (SOCKET_THEMES[structural.SOCKET_THEME] ?? wireTheme.A);
-
-      return {
-        baseColorHex: activeTheme.bulbs[index % activeTheme.bulbs.length]!,
-        position: [point.x, point.y, point.z] as [number, number, number],
-        socketColorHex,
-      };
-    })
-  ), [activeTheme.bulbs, baseCurve, structural.SOCKET_THEME, locations, wireTheme.A, wireTheme.B]);
-
-  const segmentCount = ribbonSegmentCount(structural.WIRE_TWISTS);
 
   // Imperative per-frame updater for every continuous slider we no longer
   // subscribe to. Reading `useConfigStore.getState()` is zero-cost and
@@ -338,12 +300,14 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
       }
     }
     if (bloom) {
-      // Linear product so sliders predictably add halo; no hidden floor
-      // that made defaults ~invisible.
-      bloom.intensity = 1.8 * c.BLOOM_STRENGTH * c.BLOOM_INTENSITY;
+      // Visible bulb glow is handled by explicit colored halo billboards in
+      // BillboardBulbs. This post bloom pass now stays tiny: it only catches
+      // the hottest bulb pixels for sparkle instead of turning bright wires
+      // and sockets into ambient light.
+      bloom.intensity = computeBloomIntensity(c.BLOOM_STRENGTH, c.BLOOM_INTENSITY) * POSTPROCESS_BLOOM_SCALE;
       const lum = bloom.luminanceMaterial;
       if (lum?.uniforms?.threshold) {
-        lum.uniforms.threshold.value = c.BLOOM_THRESHOLD;
+        lum.uniforms.threshold.value = Math.max(BLOOM_THRESHOLD_FLOOR, c.BLOOM_THRESHOLD);
       }
     }
   });
@@ -353,7 +317,7 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
       {structural.BACKGROUND_ENABLED ? (
         <color attach="background" args={[BACKGROUND_COLOR]} />
       ) : null}
-      <CameraPose stringFocus={stringFocus} />
+      <CameraPose />
 
       <ambientLight ref={ambientRef} intensity={0} />
       <directionalLight
@@ -391,34 +355,20 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
         />
       ) : null}
 
-      {/* Single luminance-threshold Bloom pass does the emissive halo work
-          that a <SelectiveBloom> + <Selection> + 80 <pointLight>s would have
-          done, without the "Maximum update depth" render loop that older
-          combo caused. */}
+      {/* Per-bulb halo geometry carries the visible colored glow. The global
+          Bloom pass stays post-FX-only so it cannot wash the scene like
+          ambient light. */}
       <group ref={swayGroupRef}>
-        {/* Strand A and B are π out of phase, so the weave depth offset in
-            the shader pushes them in opposite directions every half-twist
-            and they actually cross over each other in screen space
-            (instead of just alpha-overlapping as two flat ribbons). */}
-        <WireRibbon
-          color={wireTheme.A}
-          curve={wireA}
-          segments={segmentCount}
-          twistPhase={0}
-          strandId={0}
-        />
-        <WireRibbon
-          color={wireTheme.B}
-          curve={wireB}
-          segments={segmentCount}
-          twistPhase={Math.PI}
-          strandId={1}
-        />
-        <BillboardBulbs
-          bulbs={bulbData}
-          themePalette={activeTheme.bulbs}
-          pointLightsEnabled={structural.POINT_LIGHTS_ENABLED}
-        />
+        {layoutPaths.map((path, index) => (
+          <LightString
+            key={path.id}
+            path={path}
+            structural={structural}
+            activeTheme={activeTheme}
+            wireTheme={wireTheme}
+            resetPointSpill={index === 0}
+          />
+        ))}
       </group>
 
       {structural.POSTFX_ENABLED ? (
@@ -434,32 +384,204 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
   );
 }
 
-// Fixed view direction (unit): camera dolly is along this ray toward the
-// string focus, so "distance" does not slide the subject vertically the way
-// a raw world-Z coordinate did.
-const CAMERA_FORWARD = new Vector3(0, 4.8, -15).normalize();
-const _stringFocusW = new Vector3();
-const _eyeW = new Vector3();
+function LightString({
+  path,
+  structural,
+  activeTheme,
+  wireTheme,
+  resetPointSpill,
+}: {
+  path: LightLayoutPath;
+  structural: StructuralConfig;
+  activeTheme: { bulbs: number[] };
+  wireTheme: { A: number; B: number };
+  resetPointSpill: boolean;
+}) {
+  const baseCurve = useMemo(
+    () => new CatmullRomCurve3(path.points, path.closed ?? false, 'centripetal'),
+    [path],
+  );
 
-function CameraPose({ stringFocus }: { stringFocus: Vector3 }) {
-  const { camera } = useThree();
+  const locations = useMemo(
+    () => bulbTLocationsForSpans(path.spanCount, structural.LIGHTS_PER_SEGMENT),
+    [path.spanCount, structural.LIGHTS_PER_SEGMENT],
+  );
 
-  useFrame(() => {
+  const evenLocations = useMemo(
+    () => locations.filter((_, index) => index % 2 === 0),
+    [locations],
+  );
+
+  const oddLocations = useMemo(
+    () => locations.filter((_, index) => index % 2 !== 0),
+    [locations],
+  );
+  const wireSeparation = structural.WIRE_SEPARATION;
+  const wireTwists = structural.WIRE_TWISTS;
+  const separationCompensation = Math.max(
+    0,
+    wireSeparation - DEFAULT_CONFIG.WIRE_SEPARATION,
+  );
+
+  const wireA = useMemo(
+    () => new TwistedCurve(
+      baseCurve,
+      wireSeparation,
+      wireTwists,
+      0,
+      evenLocations,
+      oddLocations,
+      structural.BULB_SCALE,
+      true,
+      path.bulbTarget,
+      separationCompensation,
+    ),
+    [
+      baseCurve,
+      path.bulbTarget,
+      structural.BULB_SCALE,
+      wireTwists,
+      wireSeparation,
+      separationCompensation,
+      evenLocations,
+      oddLocations,
+    ],
+  );
+
+  const wireB = useMemo(
+    () => new TwistedCurve(
+      baseCurve,
+      wireSeparation,
+      wireTwists,
+      Math.PI,
+      oddLocations,
+      evenLocations,
+      structural.BULB_SCALE,
+      true,
+      path.bulbTarget,
+      separationCompensation,
+    ),
+    [
+      baseCurve,
+      path.bulbTarget,
+      structural.BULB_SCALE,
+      wireTwists,
+      wireSeparation,
+      separationCompensation,
+      evenLocations,
+      oddLocations,
+    ],
+  );
+
+  const bulbData = useMemo(() => (
+    locations.map((t, index) => {
+      const point = baseCurve.getPoint(t);
+      const direction = computeBulbDirection(baseCurve, t, point, path.bulbTarget);
+      const socketColorHex = structural.SOCKET_THEME === 'WIRE_MATCH'
+        ? (index % 2 === 0 ? wireTheme.A : wireTheme.B)
+        : (SOCKET_THEMES[structural.SOCKET_THEME] ?? wireTheme.A);
+
+      return {
+        baseColorHex: activeTheme.bulbs[index % activeTheme.bulbs.length]!,
+        position: [point.x, point.y, point.z] as [number, number, number],
+        direction,
+        socketColorHex,
+      };
+    })
+  ), [activeTheme.bulbs, baseCurve, path.bulbTarget, structural.SOCKET_THEME, locations, wireTheme.A, wireTheme.B]);
+
+  const segmentCount = ribbonSegmentCount(wireTwists);
+
+  return (
+    <>
+      {/* Strand A and B are PI out of phase, so the weave depth offset in
+          the shader pushes them in opposite directions every half-twist. */}
+      <WireRibbon
+        color={wireTheme.A}
+        curve={wireA}
+        segments={segmentCount}
+        effectiveTwists={wireTwists}
+        twistPhase={0}
+        strandId={0}
+      />
+      <WireRibbon
+        color={wireTheme.B}
+        curve={wireB}
+        segments={segmentCount}
+        effectiveTwists={wireTwists}
+        twistPhase={Math.PI}
+        strandId={1}
+      />
+      <BillboardBulbs
+        bulbs={bulbData}
+        themePalette={activeTheme.bulbs}
+        pointLightsEnabled={structural.POINT_LIGHTS_ENABLED}
+        separationCompensation={separationCompensation}
+        resetPointSpill={resetPointSpill}
+      />
+    </>
+  );
+}
+
+function CameraPose() {
+  const lastProjectionKey = useRef<string | null>(null);
+
+  useFrame(({ camera, size }) => {
+    const ortho = getOrthographicCamera(camera);
+    if (!ortho) return;
+
     const c = useConfigStore.getState().config;
-    _stringFocusW.set(
-      stringFocus.x + c.CAMERA_X,
-      stringFocus.y + c.CAMERA_HEIGHT,
-      stringFocus.z,
-    );
-    // eye = focus − dolly * forward  ⇒  moving distance only changes zoom;
-    // X/Y are shifts of the look-at on the string.
-    _eyeW.copy(_stringFocusW).addScaledVector(CAMERA_FORWARD, -c.CAMERA_DISTANCE);
-    camera.position.copy(_eyeW);
-    camera.up.set(0, 1, 0);
-    camera.lookAt(_stringFocusW);
+    const baseZoom = size.height > 0 ? size.height / ORTHO_VIEW_HEIGHT : 60;
+    const zoom = baseZoom * (ORTHO_BASE_DISTANCE / Math.max(1, c.CAMERA_DISTANCE));
+    const projectionKey = `${size.width}x${size.height}|${zoom.toFixed(4)}`;
+
+    if (lastProjectionKey.current !== projectionKey) {
+      lastProjectionKey.current = projectionKey;
+      ortho.zoom = zoom;
+      ortho.updateProjectionMatrix();
+    }
+
+    _cameraTarget.set(c.CAMERA_X, c.CAMERA_HEIGHT, 0);
+    _cameraEye.copy(_cameraTarget).addScaledVector(CAMERA_FORWARD, -ORTHO_CAMERA_DISTANCE);
+    ortho.position.copy(_cameraEye);
+    ortho.up.set(0, 1, 0);
+    ortho.lookAt(_cameraTarget);
   });
 
   return null;
+}
+
+function getOrthographicCamera(camera: unknown): OrthographicCamera | null {
+  const maybe = camera as OrthographicCamera & { isOrthographicCamera?: boolean };
+  return maybe.isOrthographicCamera ? maybe : null;
+}
+
+function computeBloomIntensity(strength: number, intensity: number): number {
+  const raw = Math.max(0, strength) * Math.max(0, intensity);
+  if (raw <= 0) return 0;
+  return BLOOM_INTENSITY_CEILING * (1 - Math.exp(-raw / BLOOM_RESPONSE_CURVE));
+}
+
+function computeBulbDirection(
+  curve: CatmullRomCurve3,
+  t: number,
+  point: Vector3,
+  target: Vector3,
+): [number, number, number] {
+  const tangent = curve.getTangent(t).normalize();
+  let x = -tangent.y;
+  let y = tangent.x;
+  const toTargetX = target.x - point.x;
+  const toTargetY = target.y - point.y;
+
+  if ((x * toTargetX) + (y * toTargetY) < 0) {
+    x = -x;
+    y = -y;
+  }
+
+  const length = Math.hypot(x, y);
+  if (length < 0.0001) return [0, -1, 0];
+  return [x / length, y / length, 0];
 }
 
 // EffectComposer MUST receive effect children directly (Bloom, ToneMapping,
@@ -498,12 +620,12 @@ function PostFX({
       multisampling={antialiased ? 8 : 0}
       frameBufferType={HalfFloatType}
     >
-      {/* Default matches shared BLOOM_THRESHOLD; SceneContent useFrame updates
-          luminance every frame (React-driven threshold would JSON-rebuild). */}
+      {/* SceneContent useFrame keeps this threshold floored high enough that
+          bright wires/sockets do not drive full-scene bloom. */}
       <Bloom
-        luminanceThreshold={0.12}
+        luminanceThreshold={BLOOM_THRESHOLD_FLOOR}
         mipmapBlur
-        intensity={1}
+        intensity={POSTPROCESS_BLOOM_SCALE}
         radius={bloomRadius}
       />
       {/* AGX preserves hue at high intensity — ACES Filmic was collapsing
@@ -522,12 +644,14 @@ function WireRibbon({
   color,
   curve,
   segments,
+  effectiveTwists,
   twistPhase,
   strandId,
 }: {
   color: number;
   curve: TwistedCurve;
   segments: number;
+  effectiveTwists: number;
   twistPhase: number;
   strandId: 0 | 1;
 }) {
@@ -575,11 +699,14 @@ function WireRibbon({
     }
 
     const u = material.uniforms;
-    if (u.uTwists) u.uTwists.value = c.WIRE_TWISTS;
+    if (u.uTwists) u.uTwists.value = effectiveTwists;
     if (u.uAmbient) u.uAmbient.value = c.AMBIENT_INTENSITY;
     if (u.uThickness) u.uThickness.value = c.WIRE_THICKNESS;
     if (u.uWeaveDepth) {
-      u.uWeaveDepth.value = Math.max(0.1, tW * 3.1);
+      u.uWeaveDepth.value = Math.max(0.05, tW * 1.85);
+    }
+    if (u.uCollisionSpread) {
+      u.uCollisionSpread.value = Math.max(0.002, tW * 0.12);
     }
     if (u.uPerTwistDepth) {
       u.uPerTwistDepth.value = Math.min(
@@ -587,11 +714,8 @@ function WireRibbon({
         0.012 + 0.05 * Math.min(2.5, 0.034 / (tW + 0.011)),
       );
     }
-    const sign = strandId === 0 ? 1 : -1;
-    const boost = 1.0 + 0.12 / (tW + 0.012);
-    const b = Math.min(1.45, boost);
-    material.polygonOffsetFactor = sign * 1.25 * 0.95 * b;
-    material.polygonOffsetUnits = sign * 2.0 * Math.min(1.35, b);
+    material.polygonOffsetFactor = 0;
+    material.polygonOffsetUnits = 0;
 
     const scene = state.scene;
     const keyL = scene.getObjectByName('melt-key') as DirectionalLight | null;

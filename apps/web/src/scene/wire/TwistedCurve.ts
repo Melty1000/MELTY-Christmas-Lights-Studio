@@ -5,6 +5,11 @@ const _curveBinormal = new Vector3();
 const _offsetDir = new Vector3();
 const _finalPos = new Vector3();
 const _tempVec = new Vector3();
+const _dipDir = new Vector3();
+const _targetDelta = new Vector3();
+const CONNECT_DIP_BULB_SCALE = 0.58;
+const CONNECT_DIP_OFFSET_SCALE = 0.35;
+const CONNECT_DIP_EXTRA_SEPARATION_SCALE = 0.35;
 
 export class TwistedCurve extends Curve<Vector3> {
   baseCurve: CatmullRomCurve3;
@@ -20,6 +25,7 @@ export class TwistedCurve extends Curve<Vector3> {
   cornerSharpness = 8;
   socketRadius: number;
   bypassRadius: number;
+  bulbTarget: Vector3 | null;
   /** Z tuck at bulb joins (larger for thin wire); set from WIRE_THICKNESS in WireRibbon. */
   connectZBack = 0.04;
 
@@ -32,6 +38,8 @@ export class TwistedCurve extends Curve<Vector3> {
     bypasses: number[] = [],
     bulbScale = 0.1,
     isBillboard = false,
+    bulbTarget?: Vector3,
+    separationCompensation = 0,
   ) {
     super();
     this.baseCurve = baseCurve;
@@ -42,8 +50,14 @@ export class TwistedCurve extends Curve<Vector3> {
     this.bypasses = bypasses;
     this.bulbScale = bulbScale;
     this.isBillboard = isBillboard;
+    this.bulbTarget = bulbTarget?.clone() ?? null;
     this.pinchRange = 0.003 + bulbScale * 0.015;
-    this.dipDepth = 1.5 * bulbScale + offset;
+    const baseDipOffset = Math.max(0, offset - separationCompensation);
+    this.dipDepth = (
+      CONNECT_DIP_BULB_SCALE * bulbScale
+      + CONNECT_DIP_OFFSET_SCALE * baseDipOffset
+      + CONNECT_DIP_EXTRA_SEPARATION_SCALE * separationCompensation
+    );
     this.socketRadius = offset;
     this.bypassRadius = offset;
   }
@@ -86,11 +100,11 @@ export class TwistedCurve extends Curve<Vector3> {
     let cx = Math.cos(twistAngle);
     let cy = Math.sin(twistAngle);
     let radius = this.offset;
-    let verticalOffset = 0;
+    let dipOffset = 0;
 
     if (influence > 0) {
       if (type === 'connect') {
-        verticalOffset = -this.dipDepth * influence;
+        dipOffset = this.dipDepth * influence;
       } else if (type === 'bypass') {
         radius = this.offset * (1 - influence) + this.bypassRadius * influence;
       }
@@ -118,8 +132,24 @@ export class TwistedCurve extends Curve<Vector3> {
     }
 
     _finalPos.copy(basePoint).addScaledVector(_offsetDir, radius);
-    if (verticalOffset !== 0) {
-      _finalPos.y += verticalOffset;
+    if (dipOffset !== 0) {
+      _dipDir.set(-tangent.y, tangent.x, 0);
+
+      if (this.bulbTarget) {
+        _targetDelta.copy(this.bulbTarget).sub(basePoint);
+        if (_dipDir.dot(_targetDelta) < 0) {
+          _dipDir.multiplyScalar(-1);
+        }
+      } else {
+        _dipDir.set(0, -1, 0);
+      }
+
+      if (_dipDir.lengthSq() < 0.000001) {
+        _dipDir.set(0, -1, 0);
+      } else {
+        _dipDir.normalize();
+      }
+      _finalPos.addScaledVector(_dipDir, dipOffset);
     }
 
     // Tuck the dip behind the base line so the ribbon does not read in
@@ -129,15 +159,10 @@ export class TwistedCurve extends Curve<Vector3> {
     }
 
     // Per-twist Z: helix-rate depth so strands do not sit in one plane.
-    // At bulb connects, damp this — otherwise a +swing cancels the tuck and
-    // the dip pokes through the gold socket.
-    const turnN = Math.max(1e-4, this.turns);
-    const helixT = 2.0 * Math.PI * t * turnN;
-    const amp = 0.06 * (this.offset + 0.028) + 0.012;
-    const perTwistZ = amp * Math.sin(helixT) * Math.cos(0.5 * helixT + this.phase * 0.3);
-    const helixDamp =
-      type === 'connect' && influence > 0 ? 1.0 - influence * influence : 1.0;
-    _finalPos.z += perTwistZ * helixDamp;
+    // The normal/binormal offset above already gives the pair a true helix
+    // around the base curve. Do not add a second unrelated Z sine here: that
+    // was making the cord read as overlapping waves instead of one physical
+    // strand wrapping over and under the other.
 
     return optionalTarget.copy(_finalPos);
   }

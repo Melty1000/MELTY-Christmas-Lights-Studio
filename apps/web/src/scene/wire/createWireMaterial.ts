@@ -39,20 +39,17 @@ export function createWireMaterial(
   // default (0,0,0) and every wire renders pitch black. We use a
   // `THREE.Color` instance so the setter actually uploads the value.
   const baseColor = new Color(baseColorHex);
-  // Opposite values on the two draw calls: breaks depth ties where the two
-  // theme-colored ribbons intersect without depending on draw order.
-  const poSign = strandId === 0 ? 1 : -1;
   // Whole-strand nudge in the camera-facing ribbon width (perp): pushes the
   // two theme wires apart in screen space at overlaps where helix + sin(weave)
   // would still line up. Opposite for A vs B.
   const strandLateral = strandId === 0 ? -1.0 : 1.0;
 
   return new ShaderMaterial({
-    // WebGL: larger offset than the first pass — at shallow grazing angles
-    // 0.55/factor 1.0u was still too weak to break ties.
+    // Depth is handled by the actual helix phase, not by a static "strand A
+    // always wins" polygon offset.
     polygonOffset: true,
-    polygonOffsetFactor: 1.25 * poSign,
-    polygonOffsetUnits: 2.0 * poSign,
+    polygonOffsetFactor: 0,
+    polygonOffsetUnits: 0,
     uniforms: {
       uBaseColor: new Uniform(baseColor),
       uTwists: new Uniform(215),
@@ -73,11 +70,11 @@ export function createWireMaterial(
       // cross(tangent, view) can collapse if they align, so we bias with
       // this world-space "up-ish" hint.
       uFallbackPerp: new Uniform(new Vector3(0, 1, 0)),
-      // 0.0 / 1.0 — second strand gets a minuscule extra shift along
-      // viewDir so the two meshes are never bit-identical at crossings even
-      // with polygon offset disabled on some drivers.
+      // Kept for older material instances during HMR; current shader uses
+      // phase-accurate full-frequency helix depth instead.
       uStrandNudge: new Uniform(strandId === 0 ? 0.0 : 1.0),
       uStrandLateral: new Uniform(strandLateral),
+      uCollisionSpread: new Uniform(0.02),
       // Per-twist view-space offset at full twist frequency (uTwists), in
       // addition to the slower groove weave. Scales in JS with thin wires.
       uPerTwistDepth: new Uniform(0.028),
@@ -121,11 +118,13 @@ export function createWireMaterial(
       uniform vec3 uFallbackPerp;
       uniform float uStrandNudge;
       uniform float uStrandLateral;
+      uniform float uCollisionSpread;
       uniform float uPerTwistDepth;
 
       varying vec2 vUv;
       varying vec3 vWorldPos;
       varying vec3 vPerpW;
+      varying float vHelixFront;
 
       const float TAU = 6.28318530717958;
 
@@ -153,32 +152,17 @@ export function createWireMaterial(
         // Constant shift of the whole ribbon along perp: separates strand A
         // and B in the *same* plane the slider uses to thicken the cable, so
         // where two 3D curve segments meet they are not the same sliver in
-        // clip space. Scales with thickness so it stays sub-pixel subtle.
-        vec3 strandPerp = perp * uStrandLateral * 0.42 * uThickness;
+        // clip space. This is intentionally tiny now; the physical helix
+        // radius and depth do the real separation.
+        vec3 strandPerp = perp * uStrandLateral * uCollisionSpread;
 
-        // Weave depth: move this strand toward or away from the camera
-        // sinusoidally along its length. Because strand A uses uPhase=0
-        // and strand B uses uPhase=π, they always offset in opposite
-        // directions and cross over every half-twist. This is what makes
-        // the cord read as "two ropes twisting" instead of "a flat pair
-        // of stripes".
-        // Groove (slow along length): decimated uTwists for a stable texture.
-        float twistPhase = uv.x * uTwists * TAU / 20.0 + uPhase;
-        float weave = sin(twistPhase) * uWeaveDepth;
-        // Per-twist depth: one “bucket” per full 1/turns of u — same
-        // timescale as the 3D helix on the curve so crossings stagger in Z
-        // from one twist to the next, not all on one depth slice.
-        float nTw = max(uTwists, 0.0);
-        float tTw = uv.x * nTw;
-        float pt = TAU * tTw;
-        float perTwist = sin(pt) * cos(0.5 * pt + uPhase);
-        // Strand B: constant forward bias so the two ropes never share one
-        // depth plane (pairs with uStrandNudge in JS).
-        vec3 weaveOffset = viewDir * (
-          weave
-          + uStrandNudge * 0.0038
-          + perTwist * uPerTwistDepth
-        );
+        // Phase-accurate over/under depth. This uses the same full twist
+        // frequency as TwistedCurve, so strand A and strand B alternate
+        // front/back at every physical crossing instead of one strand always
+        // winning the depth test.
+        float helixPhase = uv.x * max(uTwists, 0.0) * TAU + uPhase;
+        float helixFront = sin(helixPhase);
+        vec3 weaveOffset = viewDir * helixFront * uWeaveDepth;
 
         // Where the two ribbon *halves* of the same strip meet (tight
         // dips / the “V” under a bulb) they are coplanar and can z-fight.
@@ -195,6 +179,7 @@ export function createWireMaterial(
 
         vWorldPos = displaced.xyz;
         vPerpW = perp;
+        vHelixFront = helixFront;
 
         vUv = uv;
         gl_Position = projectionMatrix * viewMatrix * displaced;
@@ -223,6 +208,7 @@ export function createWireMaterial(
       varying vec2 vUv;
       varying vec3 vWorldPos;
       varying vec3 vPerpW;
+      varying float vHelixFront;
 
       const float PI = 3.14159265358979;
       const float TAU = 6.28318530717958;
@@ -294,19 +280,25 @@ export function createWireMaterial(
         // Metallic ridge highlight — tint bright with the base color so
         // silver/gold/copper themes still read as their hue on the
         // highlight rather than going pure white.
-        color += mix(vec3(1.0), uBaseColor, 0.35) * ridge * 0.45 * diffuse;
+        color += mix(vec3(1.0), uBaseColor, 0.65) * ridge * 0.16 * diffuse;
 
         // Shadow groove — subtract on the opposite phase for depth. The
         // grooveStrength uniform is exposed so we can soften it on low
         // twist counts if we ever want to.
-        color -= uBaseColor * groove * uGrooveStrength * 0.3;
+        color -= uBaseColor * groove * uGrooveStrength * 0.08;
+
+        // Back half of the helix is darker and slightly less covered, which
+        // makes the over/under relationship readable even when OBS scaling
+        // compresses several twists into a few pixels.
+        float front = smoothstep(-0.2, 0.75, vHelixFront);
+        color *= mix(0.48, 1.0, front);
 
         // Silhouette anti-alias. At the grazing edges (V near 0 or 1)
         // ndotv drops to zero; combined with alphaToCoverage below, MSAA
         // will dither-fade the last 1-2 pixels of the ribbon into the
         // background, eliminating the "jagged diagonal line" look that
         // plain quads have against thin-contrast backgrounds.
-        float edgeAlpha = smoothstep(0.0, 0.05, ndotv);
+        float edgeAlpha = smoothstep(0.0, 0.05, ndotv) * mix(0.72, 1.0, front);
 
         gl_FragColor = vec4(color, edgeAlpha);
       }

@@ -1,11 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import {
   ANIMATION_STYLES,
+  LIGHT_LAYOUT_NAMES,
   SOCKET_THEME_NAMES,
   THEME_NAMES,
   THEMES,
   WIRE_THEME_NAMES,
+  type LightLayoutName,
   type Preset,
+  wireSeparationFromControlValue,
+  wireSeparationToControlValue,
+  wireThicknessFromControlValue,
+  wireThicknessToControlValue,
+  wireTwistsFromControlValue,
+  wireTwistsToControlValue,
 } from '@melty/shared';
 import {
   ActionButton,
@@ -15,6 +24,7 @@ import {
   EmptyState,
   MessageBanner,
   PageRoot,
+  RangeField,
   StatusPill,
   TextField,
 } from '~/components/controls/ControlPrimitives.tsx';
@@ -67,14 +77,46 @@ const ANIMATION_OPTIONS = ANIMATION_STYLES.map((name) => ({
   label: formatToken(name),
   value: name,
 }));
+const LIGHT_LAYOUT_LABELS: Record<LightLayoutName, string> = {
+  TOP: 'Top of screen string',
+  BOTTOM: 'Bottom of screen string',
+  RIGHT: 'Right of screen string',
+  LEFT: 'Left of screen string',
+  TOP_RIGHT: 'Top and right of screen',
+  TOP_LEFT: 'Top and left of screen',
+  TOP_BOTTOM: 'Top and bottom of screen',
+  BOTTOM_RIGHT: 'Bottom and right of screen',
+  BOTTOM_LEFT: 'Bottom and left of screen',
+  LEFT_RIGHT: 'Left and right of screen',
+  LEFT_TOP_RIGHT: 'Left, top, and right of screen',
+  TOP_RIGHT_BOTTOM: 'Top, right, and bottom of screen',
+  RIGHT_BOTTOM_LEFT: 'Right, bottom, and left of screen',
+  BOTTOM_LEFT_TOP: 'Bottom, left, and top of screen',
+  ALL_SIDES: 'All 4 sides',
+  DRAPES: 'Drapes',
+  DUAL_DRAPES: 'Dual drapes',
+  CIRCLE: 'Circle',
+  TRIANGLE: 'Triangle',
+  SQUARE: 'Square',
+  PENTAGON: 'Pentagon',
+  HEXAGON: 'Hexagon',
+  HEPTAGON: 'Heptagon',
+  OCTAGON: 'Octagon',
+};
+const LIGHT_LAYOUT_OPTIONS = LIGHT_LAYOUT_NAMES.map((name) => ({
+  label: LIGHT_LAYOUT_LABELS[name],
+  value: name,
+}));
 
 export function Studio() {
   return (
     <PageRoot>
       <ThemeSection />
+      <LightLayoutSection />
 
       <CollapsibleSection id="bulbs" title="Bulbs" defaultOpen>
         <BoundRange field="BULB_SCALE" label="Bulb scale" min={0.1} max={1} step={0.01} />
+        <BoundRange field="EMISSIVE_INTENSITY" label="Bulb intensity" min={0} max={20} step={0.1} />
         <BoundRange field="GLASS_OPACITY" label="Glass opacity" min={0} max={0.9} step={0.01} />
         <BoundRange field="GLASS_ROUGHNESS" label="Glass roughness" min={0} max={1} step={0.01} />
       </CollapsibleSection>
@@ -97,8 +139,8 @@ export function Studio() {
 
       <CollapsibleSection
         id="camera"
-        title="Camera"
-        hint="Distance dollies along the view (zoom). X/Y move the look-at on the string."
+        title="Advanced Camera"
+        hint="Fine tuning only. Light Layouts handle default framing."
       >
         <BoundRange field="CAMERA_DISTANCE" label="Distance" min={1} max={200} step={0.1} />
         <BoundRange field="CAMERA_HEIGHT" label="Target offset (Y)" min={-50} max={50} step={0.1} />
@@ -120,9 +162,9 @@ export function Studio() {
       <CollapsibleSection id="postfx" title="Post FX / Bloom">
         <BoundToggle field="POSTFX_ENABLED" label="Post FX" />
         <BoundRange field="BLOOM_STRENGTH" label="Strength" min={0} max={5} step={0.01} />
-        <BoundRange field="BLOOM_RADIUS" label="Radius" min={0} max={2} step={0.01} />
+        <BoundRange field="BLOOM_RADIUS" label="Radius" min={0} max={1} step={0.01} />
         <BoundRange field="BLOOM_THRESHOLD" label="Threshold" min={0} max={1} step={0.01} />
-        <BoundRange field="BLOOM_INTENSITY" label="Intensity" min={0} max={5} step={0.01} />
+        <BoundRange field="BLOOM_INTENSITY" label="Bloom intensity" min={0} max={5} step={0.01} />
       </CollapsibleSection>
 
       <CollapsibleSection id="environment" title="Environment">
@@ -152,6 +194,26 @@ export function Studio() {
   );
 }
 
+function LightLayoutSection() {
+  const layout = useConfigStore((s) => s.config.LIGHT_LAYOUT);
+
+  return (
+    <CollapsibleSection
+      id="light-layout"
+      title="Light Layout"
+      hint={LIGHT_LAYOUT_LABELS[layout]}
+      defaultOpen
+      action={<StatusPill label={formatToken(layout)} tone="accent" />}
+    >
+      <BoundSelect field="LIGHT_LAYOUT" label="Layout" options={LIGHT_LAYOUT_OPTIONS} />
+      <BoundRange field="LAYOUT_MARGIN" label="Margin" min={0} max={0.35} step={0.01} />
+      <BoundRange field="LAYOUT_SCALE" label="Scale" min={0.2} max={1.5} step={0.01} />
+      <BoundRange field="LAYOUT_OFFSET_X" label="Offset X" min={-1} max={1} step={0.01} />
+      <BoundRange field="LAYOUT_OFFSET_Y" label="Offset Y" min={-1} max={1} step={0.01} />
+    </CollapsibleSection>
+  );
+}
+
 // Theme section is split out because it reads the live palette + label to
 // feed the header hint and <ColorStrip>. Extracting it keeps the main
 // Studio body free of a config subscription entirely.
@@ -177,19 +239,136 @@ function ThemeSection() {
 
 // Wires header shows a live pin-count hint, so it subscribes to just that
 // one number. Field re-renders are scoped to the header badge only.
+interface WireControlUi {
+  thickness: number;
+  separation: number;
+  twists: number;
+}
+
 function WiresSection() {
-  const numPins = useConfigStore((s) => s.config.NUM_PINS);
+  const wireControls = useConfigStore(useShallow((s) => ({
+    NUM_PINS: s.config.NUM_PINS,
+    WIRE_THICKNESS: s.config.WIRE_THICKNESS,
+    WIRE_SEPARATION: s.config.WIRE_SEPARATION,
+    WIRE_TWISTS: s.config.WIRE_TWISTS,
+  })));
+  const patch = useConfigStore((s) => s.patch);
+  const [wireUi, setWireUi] = useState<WireControlUi>(() => wireRawToUi(
+    useConfigStore.getState().config,
+  ));
+
+  useEffect(
+    () => {
+      const rawFromUi = wireUiToRaw(wireUi);
+      if (wireRawMatches(rawFromUi, wireControls)) return;
+      setWireUi(wireRawToUi(wireControls));
+    },
+    [wireControls, wireUi],
+  );
+
+  const patchWireUi = useCallback(
+    (nextUi: WireControlUi) => {
+      setWireUi(nextUi);
+      void patch(wireUiToRaw(nextUi));
+    },
+    [patch],
+  );
+
+  const handleThicknessChange = useCallback(
+    (value: number) => {
+      patchWireUi({ ...wireUi, thickness: value });
+    },
+    [patchWireUi, wireUi],
+  );
+  const handleSeparationChange = useCallback(
+    (value: number) => {
+      patchWireUi({ ...wireUi, separation: value });
+    },
+    [patchWireUi, wireUi],
+  );
+  const handleTwistsChange = useCallback(
+    (value: number) => {
+      patchWireUi({ ...wireUi, twists: value });
+    },
+    [patchWireUi, wireUi],
+  );
 
   return (
-    <CollapsibleSection id="wires" title="Wires" hint={`${Math.max(numPins - 1, 0)} spans`}>
+    <CollapsibleSection id="wires" title="Wires" hint={`${Math.max(wireControls.NUM_PINS - 1, 0)} spans`}>
       <BoundRange field="NUM_PINS" label="Pin points" min={2} max={20} step={1} round />
       <BoundRange field="LIGHTS_PER_SEGMENT" label="Lights / span" min={1} max={100} step={1} round />
       <BoundRange field="SAG_AMPLITUDE" label="Sag" min={0} max={2} step={0.01} />
       <BoundRange field="TENSION" label="Tension" min={-1} max={1} step={0.01} />
-      <BoundRange field="WIRE_THICKNESS" label="Thickness" min={0} max={0.2} step={0.001} />
-      <BoundRange field="WIRE_SEPARATION" label="Separation" min={0} max={0.3} step={0.001} />
-      <BoundRange field="WIRE_TWISTS" label="Twists" min={0} max={1000} step={1} round />
+      <RangeField
+        label="Thickness"
+        min={0}
+        max={100}
+        step={1}
+        value={wireUi.thickness}
+        onChange={handleThicknessChange}
+      />
+      <RangeField
+        label="Separation"
+        min={0}
+        max={100}
+        step={1}
+        value={wireUi.separation}
+        onChange={handleSeparationChange}
+      />
+      <RangeField
+        label="Twists"
+        min={0}
+        max={100}
+        step={1}
+        value={wireUi.twists}
+        onChange={handleTwistsChange}
+      />
     </CollapsibleSection>
+  );
+}
+
+function wireRawToUi(wire: {
+  WIRE_THICKNESS: number;
+  WIRE_SEPARATION: number;
+  WIRE_TWISTS: number;
+}): WireControlUi {
+  return {
+    thickness: wireThicknessToControlValue(wire.WIRE_THICKNESS),
+    separation: wireSeparationToControlValue(
+      wire.WIRE_SEPARATION,
+      wire.WIRE_THICKNESS,
+    ),
+    twists: wireTwistsToControlValue(
+      wire.WIRE_TWISTS,
+      wire.WIRE_THICKNESS,
+      wire.WIRE_SEPARATION,
+    ),
+  };
+}
+
+function wireUiToRaw(ui: WireControlUi) {
+  const thickness = wireThicknessFromControlValue(ui.thickness);
+  const separation = wireSeparationFromControlValue(ui.separation, thickness);
+  const twists = wireTwistsFromControlValue(ui.twists, thickness, separation);
+  return {
+    WIRE_THICKNESS: thickness,
+    WIRE_SEPARATION: separation,
+    WIRE_TWISTS: twists,
+  };
+}
+
+function wireRawMatches(
+  a: ReturnType<typeof wireUiToRaw>,
+  b: {
+    WIRE_THICKNESS: number;
+    WIRE_SEPARATION: number;
+    WIRE_TWISTS: number;
+  },
+): boolean {
+  return (
+    Math.abs(a.WIRE_THICKNESS - b.WIRE_THICKNESS) < 0.0005
+    && Math.abs(a.WIRE_SEPARATION - b.WIRE_SEPARATION) < 0.0005
+    && a.WIRE_TWISTS === b.WIRE_TWISTS
   );
 }
 

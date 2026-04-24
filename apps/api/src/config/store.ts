@@ -6,6 +6,9 @@ import {
   configSchema,
   type Config,
   type ConfigPatch,
+  applyWireGuardrails,
+  withLayoutCameraDefaults,
+  withWireGuardrails,
 } from '@melty/shared';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -27,7 +30,7 @@ export async function initConfigStore(): Promise<void> {
       const raw = await readFile(CONFIG_PATH, 'utf8');
       const parsed = configSchema.safeParse(JSON.parse(raw));
       if (parsed.success) {
-        current = parsed.data;
+        current = applyWireGuardrails(parsed.data);
         console.log('[config] loaded from disk');
       } else {
         console.warn('[config] invalid config.json — using defaults', parsed.error.flatten());
@@ -46,9 +49,13 @@ export function getConfig(): Config {
 }
 
 export function applyPatch(patch: ConfigPatch, source: string = 'api'): Config {
-  current = { ...current, ...patch };
+  const expandedPatch = withWireGuardrails(
+    withLayoutCameraDefaults(patch, current),
+    current,
+  );
+  current = { ...current, ...expandedPatch };
   scheduleSave();
-  for (const listener of listeners) listener(patch, source);
+  for (const listener of listeners) listener(expandedPatch, source);
   return current;
 }
 

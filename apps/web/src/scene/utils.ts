@@ -5,8 +5,12 @@ export function getBulbPalette(hex: number): { filament: Color; core: Color } {
   const hsl = { h: 0, s: 0, l: 0 };
   color.getHSL(hsl);
   const isWhite = hsl.s < 0.2;
-  const filament = new Color().setHSL(hsl.h, isWhite ? 0 : 0.2, 0.95);
-  const core = new Color().setHSL(hsl.h, isWhite ? 0 : 1, 0.85);
+  const filament = isWhite
+    ? new Color().setHSL(hsl.h, 0, 0.95)
+    : new Color().setHSL(hsl.h, Math.max(0.8, hsl.s), 0.52);
+  const core = isWhite
+    ? new Color().setHSL(hsl.h, 0, 0.85)
+    : new Color().setHSL(hsl.h, Math.max(0.9, hsl.s), 0.48);
   return { filament, core };
 }
 
@@ -27,7 +31,14 @@ export function bulbTLocations(
   numPins: number,
   lightsPerSegment: number,
 ): number[] {
-  const spans = numPins - 1;
+  return bulbTLocationsForSpans(numPins - 1, lightsPerSegment);
+}
+
+export function bulbTLocationsForSpans(
+  spanCount: number,
+  lightsPerSegment: number,
+): number[] {
+  const spans = Math.max(1, spanCount);
   const totalLights = spans * lightsPerSegment;
   const ts: number[] = [];
   const spanLen = 1 / spans;

@@ -4,6 +4,9 @@ import {
   type ConfigPatch,
   DEFAULT_CONFIG,
   type WsServerMessage,
+  applyWireGuardrails,
+  withLayoutCameraDefaults,
+  withWireGuardrails,
   wsServerMessageSchema,
 } from '@melty/shared';
 
@@ -177,7 +180,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
         throw new Error(`GET /api/config -> ${configRes.status}`);
       }
 
-      const config = (await configRes.json()) as Config;
+      const config = applyWireGuardrails((await configRes.json()) as Config);
       const streamerbot = streamerbotRes.ok
         ? (await streamerbotRes.json()) as StreamerbotStatus
         : {
@@ -197,16 +200,20 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   },
 
   async patch(patch) {
+    const expandedPatch = withWireGuardrails(
+      withLayoutCameraDefaults(patch, get().config),
+      get().config,
+    );
     // Apply optimistically so the UI (sliders, preview) reacts this frame.
-    set((state) => ({ config: { ...state.config, ...patch } }));
+    set((state) => ({ config: { ...state.config, ...expandedPatch } }));
     // Record which keys this client has just written so the WS broadcast
     // echo for these fields gets filtered out until the user stops
     // dragging.
-    markLocalWrites(patch);
+    markLocalWrites(expandedPatch);
     // Merge into the pending buffer and schedule a single rAF-coalesced
     // network flush. Later keys in the same drag naturally overwrite earlier
     // ones via Object.assign.
-    Object.assign(pendingPatch, patch);
+    Object.assign(pendingPatch, expandedPatch);
     schedulePatchFlush(set, get);
   },
 
@@ -280,7 +287,7 @@ function handleServerMessage(
 ) {
   switch (msg.type) {
     case 'config:snapshot':
-      set({ config: msg.config, hydrated: true });
+      set({ config: applyWireGuardrails(msg.config), hydrated: true });
       return;
     case 'config:update': {
       // Strip out keys this client wrote recently — those echoes were
@@ -290,7 +297,7 @@ function handleServerMessage(
       // pass through unfiltered, so they still land immediately.
       const filtered = filterEchoedPatch(msg.patch);
       if (Object.keys(filtered).length === 0) return;
-      set((state) => ({ config: { ...state.config, ...filtered } }));
+      set((state) => ({ config: applyWireGuardrails({ ...state.config, ...filtered }) }));
       return;
     }
     case 'streamerbot:status':
