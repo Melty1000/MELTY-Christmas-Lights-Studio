@@ -3,23 +3,43 @@
 msg_file="$1"
 
 configured_model="$(git config --get melty.codexModel 2>/dev/null || true)"
+configured_ai_model="$(git config --get melty.aiModel 2>/dev/null || true)"
 configured_machine="$(git config --get melty.commitMachine 2>/dev/null || true)"
 
-model="${CODEX_MODEL:-$configured_model}"
-machine="${CODEX_MACHINE:-$configured_machine}"
+detect_machine() {
+  raw_machine="${AI_COMMIT_MACHINE:-${CODEX_MACHINE:-${configured_machine}}}"
+
+  if [ -z "$raw_machine" ]; then
+    raw_machine="${COMPUTERNAME:-$(hostname 2>/dev/null || true)}"
+  fi
+
+  normalized="$(printf '%s' "$raw_machine" | tr '[:upper:]' '[:lower:]')"
+
+  case "$normalized" in
+    *laptop*) printf 'laptop' ;;
+    *desktop*) printf 'desktop' ;;
+    *) printf '%s' "$normalized" | tr -c 'a-z0-9._-' '-' | sed 's/--*/-/g; s/^-//; s/-$//' ;;
+  esac
+}
+
+model="${AI_MODEL:-${CLAUDE_MODEL:-${ANTHROPIC_MODEL:-${OPENAI_MODEL:-${CODEX_MODEL:-${configured_ai_model:-$configured_model}}}}}}"
+machine="$(detect_machine)"
+
+if [ -z "$model" ]; then
+  model="unknown-ai-model"
+fi
+
+if [ -z "$machine" ]; then
+  machine="unknown-machine"
+fi
 
 if [ -n "$machine" ]; then
   machine="$(printf '%s' "$machine" | tr '[:upper:]' '[:lower:]')"
 fi
 
-case "$machine" in
-  desktop|laptop) ;;
-  *) machine="" ;;
-esac
-
 needs_blank_line=0
 
-if [ -n "$model" ] && ! grep -Eiq '^Codex-Model:' "$msg_file"; then
+if [ -n "$model" ] && ! grep -Eiq '^AI-Model:' "$msg_file"; then
   needs_blank_line=1
 fi
 
@@ -31,8 +51,8 @@ if [ "$needs_blank_line" -eq 1 ]; then
   printf '\n' >> "$msg_file"
 fi
 
-if [ -n "$model" ] && ! grep -Eiq '^Codex-Model:' "$msg_file"; then
-  printf 'Codex-Model: %s\n' "$model" >> "$msg_file"
+if [ -n "$model" ] && ! grep -Eiq '^AI-Model:' "$msg_file"; then
+  printf 'AI-Model: %s\n' "$model" >> "$msg_file"
 fi
 
 if [ -n "$machine" ] && ! grep -Eiq '^Commit-Machine:' "$msg_file"; then

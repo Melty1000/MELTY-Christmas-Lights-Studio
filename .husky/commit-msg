@@ -2,8 +2,8 @@
 
 msg_file="$1"
 
-model_line="$(grep -Ei '^Codex-Model:[[:space:]]*[^[:space:]].*$' "$msg_file" || true)"
-machine_line="$(grep -Ei '^Commit-Machine:[[:space:]]*(desktop|laptop)[[:space:]]*$' "$msg_file" || true)"
+model_line="$(grep -Ei '^AI-Model:[[:space:]]*[^[:space:]].*$' "$msg_file" || true)"
+machine_line="$(grep -Ei '^Commit-Machine:[[:space:]]*[^[:space:]].*$' "$msg_file" || true)"
 
 if [ -z "$model_line" ] || [ -z "$machine_line" ]; then
   echo ""
@@ -11,9 +11,7 @@ if [ -z "$model_line" ] || [ -z "$machine_line" ]; then
   echo ""
   echo "Add these trailers to the commit message:"
   echo ""
-  echo "Codex-Model: GPT-5 Codex"
+  echo "AI-Model: GPT-5 Codex"
   echo "Commit-Machine: desktop"
-  echo ""
-  echo "Commit-Machine must be either: desktop or laptop"
   exit 1
 fi
