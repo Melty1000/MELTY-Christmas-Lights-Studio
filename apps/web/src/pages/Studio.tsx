@@ -13,6 +13,7 @@ import {
   wireSeparationToControlValue,
   wireThicknessFromControlValue,
   wireThicknessToControlValue,
+  wireTwistIntentFromControlValue,
   wireTwistsFromControlValue,
   wireTwistsToControlValue,
 } from '@melty/shared';
@@ -245,6 +246,14 @@ interface WireControlUi {
   twists: number;
 }
 
+interface LocalWireWrite {
+  raw: ReturnType<typeof wireUiToRaw>;
+  expiresAt: number;
+  settled: boolean;
+}
+
+const LOCAL_WIRE_WRITE_GRACE_MS = 1000;
+
 function WiresSection() {
   const wireControls = useConfigStore(useShallow((s) => ({
     NUM_PINS: s.config.NUM_PINS,
@@ -256,41 +265,70 @@ function WiresSection() {
   const [wireUi, setWireUi] = useState<WireControlUi>(() => wireRawToUi(
     useConfigStore.getState().config,
   ));
+  const wireUiRef = useRef(wireUi);
+  const lastLocalWireWrite = useRef<LocalWireWrite | null>(null);
+  wireUiRef.current = wireUi;
 
   useEffect(
     () => {
+      const localWrite = lastLocalWireWrite.current;
       const rawFromUi = wireUiToRaw(wireUi);
+
+      if (localWrite && wireRawMatches(localWrite.raw, wireControls)) {
+        localWrite.settled = true;
+        return;
+      }
+      if (
+        localWrite
+        && !localWrite.settled
+        && Date.now() < localWrite.expiresAt
+        && wireRawMatches(localWrite.raw, rawFromUi)
+      ) {
+        return;
+      }
+
+      lastLocalWireWrite.current = null;
       if (wireRawMatches(rawFromUi, wireControls)) return;
-      setWireUi(wireRawToUi(wireControls));
+      const nextUi = wireRawToUi(wireControls);
+      wireUiRef.current = nextUi;
+      setWireUi(nextUi);
     },
     [wireControls, wireUi],
   );
 
   const patchWireUi = useCallback(
-    (nextUi: WireControlUi) => {
-      setWireUi(nextUi);
-      void patch(wireUiToRaw(nextUi));
+    (nextUi: Partial<WireControlUi>) => {
+      const stableUi = normalizeWireUi({ ...wireUiRef.current, ...nextUi });
+      const nextRaw = wireUiToRaw(stableUi);
+      lastLocalWireWrite.current = {
+        raw: nextRaw,
+        expiresAt: Date.now() + LOCAL_WIRE_WRITE_GRACE_MS,
+        settled: false,
+      };
+      wireUiRef.current = stableUi;
+      setWireUi(stableUi);
+      void patch(nextRaw);
     },
     [patch],
   );
 
   const handleThicknessChange = useCallback(
     (value: number) => {
-      patchWireUi({ ...wireUi, thickness: value });
+      patchWireUi({ thickness: value });
     },
-    [patchWireUi, wireUi],
+    [patchWireUi],
   );
   const handleSeparationChange = useCallback(
     (value: number) => {
-      patchWireUi({ ...wireUi, separation: value });
+      patchWireUi({ separation: value });
     },
-    [patchWireUi, wireUi],
+    [patchWireUi],
   );
   const handleTwistsChange = useCallback(
     (value: number) => {
-      patchWireUi({ ...wireUi, twists: value });
+      patchWireUi({ twists: value });
     },
-    [patchWireUi, wireUi],
+    [patchWireUi],
   );
 
   return (
@@ -337,6 +375,7 @@ function wireRawToUi(wire: {
     separation: wireSeparationToControlValue(
       wire.WIRE_SEPARATION,
       wire.WIRE_THICKNESS,
+      wire.WIRE_TWISTS,
     ),
     twists: wireTwistsToControlValue(
       wire.WIRE_TWISTS,
@@ -348,7 +387,8 @@ function wireRawToUi(wire: {
 
 function wireUiToRaw(ui: WireControlUi) {
   const thickness = wireThicknessFromControlValue(ui.thickness);
-  const separation = wireSeparationFromControlValue(ui.separation, thickness);
+  const twistIntent = wireTwistIntentFromControlValue(ui.twists);
+  const separation = wireSeparationFromControlValue(ui.separation, thickness, twistIntent);
   const twists = wireTwistsFromControlValue(ui.twists, thickness, separation);
   return {
     WIRE_THICKNESS: thickness,
@@ -366,10 +406,23 @@ function wireRawMatches(
   },
 ): boolean {
   return (
-    Math.abs(a.WIRE_THICKNESS - b.WIRE_THICKNESS) < 0.0005
-    && Math.abs(a.WIRE_SEPARATION - b.WIRE_SEPARATION) < 0.0005
+    Math.abs(a.WIRE_THICKNESS - b.WIRE_THICKNESS) < 0.0011
+    && Math.abs(a.WIRE_SEPARATION - b.WIRE_SEPARATION) < 0.0011
     && a.WIRE_TWISTS === b.WIRE_TWISTS
   );
+}
+
+function normalizeWireUi(ui: WireControlUi): WireControlUi {
+  return {
+    thickness: normalizeWireControlPercent(ui.thickness),
+    separation: normalizeWireControlPercent(ui.separation),
+    twists: normalizeWireControlPercent(ui.twists),
+  };
+}
+
+function normalizeWireControlPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(100, Math.max(0, Math.round(value)));
 }
 
 // ---------------------------------------------------------------------------

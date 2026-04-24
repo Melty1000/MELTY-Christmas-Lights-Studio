@@ -64,7 +64,14 @@ export const WIRE_CONTROL_LIMITS = {
   TWIST_THICKNESS_DRAG: 50.9,
   CENTERLINE_CLEARANCE_RATIO: 0.9,
   CENTERLINE_CLEARANCE_BASE: 0.002,
+  THIN_WIRE_SEPARATION_FADE_END: 0.048,
+  THIN_WIRE_SEPARATION_MIN_LOW_TWIST: 0.006,
+  THIN_WIRE_SEPARATION_MIN_HIGH_TWIST: 0.009,
+  THIN_WIRE_SEPARATION_MAX_LOW_TWIST: 0.06,
+  THIN_WIRE_SEPARATION_MAX_HIGH_TWIST: 0.036,
 } as const;
+
+const WIRE_CONTROL_ENDPOINT_EPSILON = 0.0011;
 
 export const configSchema = z.object({
   ANIMATION_STYLE: z.enum(ANIMATION_STYLES).default('SOFT_TWINKLE'),
@@ -268,9 +275,10 @@ export function minSafeWireSeparation(thickness: number, twists: number): number
     WIRE_CONTROL_LIMITS.TWISTS_MAX,
     DEFAULT_CONFIG.WIRE_TWISTS,
   );
+  const bounds = wireSeparationBoundsFor(safeThickness, safeTwists);
 
   for (
-    let separation = WIRE_CONTROL_LIMITS.SEPARATION_MIN;
+    let separation = bounds.min;
     separation <= WIRE_CONTROL_LIMITS.SEPARATION_MAX;
     separation += 0.001
   ) {
@@ -281,7 +289,7 @@ export function minSafeWireSeparation(thickness: number, twists: number): number
       return Number(separation.toFixed(3));
     }
   }
-  return WIRE_CONTROL_LIMITS.SEPARATION_MAX;
+  return bounds.max;
 }
 
 export function maxSafeWireTwists(thickness: number, separation: number): number {
@@ -354,19 +362,39 @@ export function withWireGuardrails(
 
 export function normalizeWireForSafeConfig(values: Partial<WireValues>): WireValues {
   const raw = normalizeWireAbsolutes(values);
-  const safeSeparation = Math.max(
+  const initialSeparationBounds = wireSeparationBoundsFor(
+    raw.WIRE_THICKNESS,
+    raw.WIRE_TWISTS,
+  );
+  const boundedSeparation = clampFinite(
     raw.WIRE_SEPARATION,
-    minCenterlineSeparation(raw.WIRE_THICKNESS),
+    initialSeparationBounds.min,
+    initialSeparationBounds.max,
+    initialSeparationBounds.min,
   );
   const safeTwists = Math.min(
     raw.WIRE_TWISTS,
+    maxSafeWireTwists(raw.WIRE_THICKNESS, boundedSeparation),
+  );
+  const finalSeparationBounds = wireSeparationBoundsFor(
+    raw.WIRE_THICKNESS,
+    safeTwists,
+  );
+  const safeSeparation = clampFinite(
+    boundedSeparation,
+    finalSeparationBounds.min,
+    finalSeparationBounds.max,
+    finalSeparationBounds.min,
+  );
+  const finalTwists = Math.min(
+    safeTwists,
     maxSafeWireTwists(raw.WIRE_THICKNESS, safeSeparation),
   );
 
   return {
     WIRE_THICKNESS: raw.WIRE_THICKNESS,
     WIRE_SEPARATION: Number(safeSeparation.toFixed(3)),
-    WIRE_TWISTS: safeTwists,
+    WIRE_TWISTS: finalTwists,
   };
 }
 
@@ -391,20 +419,39 @@ export function wireThicknessFromControlValue(value: number): number {
   ).toFixed(3));
 }
 
-export function wireSeparationToControlValue(separation: number, thickness: number): number {
-  const min = minCenterlineSeparation(thickness);
-  const max = WIRE_CONTROL_LIMITS.SEPARATION_MAX;
+export function wireSeparationToControlValue(
+  separation: number,
+  thickness: number,
+  twists: number,
+): number {
+  const { min, max } = wireSeparationBoundsFor(thickness, twists);
   if (min >= max) return WIRE_CONTROL_PERCENT_MAX;
   const safeSeparation = clampFinite(separation, min, max, min);
+  if (Math.abs(safeSeparation - min) <= WIRE_CONTROL_ENDPOINT_EPSILON) {
+    return WIRE_CONTROL_PERCENT_MIN;
+  }
+  if (Math.abs(safeSeparation - max) <= WIRE_CONTROL_ENDPOINT_EPSILON) {
+    return WIRE_CONTROL_PERCENT_MAX;
+  }
   return roundWireControl(((safeSeparation - min) / (max - min)) * WIRE_CONTROL_PERCENT_MAX);
 }
 
-export function wireSeparationFromControlValue(value: number, thickness: number): number {
-  const min = minCenterlineSeparation(thickness);
-  const max = WIRE_CONTROL_LIMITS.SEPARATION_MAX;
+export function wireSeparationFromControlValue(
+  value: number,
+  thickness: number,
+  twists: number,
+): number {
+  const { min, max } = wireSeparationBoundsFor(thickness, twists);
   if (min >= max) return max;
   const percent = clampWireControl(value) / WIRE_CONTROL_PERCENT_MAX;
   return Number((min + percent * (max - min)).toFixed(3));
+}
+
+export function wireTwistIntentFromControlValue(value: number): number {
+  return Math.round(
+    (clampWireControl(value) / WIRE_CONTROL_PERCENT_MAX)
+      * WIRE_CONTROL_LIMITS.TWISTS_MAX,
+  );
 }
 
 export function wireTwistsToControlValue(
@@ -415,6 +462,8 @@ export function wireTwistsToControlValue(
   const max = maxSafeWireTwists(thickness, separation);
   if (max <= WIRE_CONTROL_LIMITS.TWISTS_MIN) return WIRE_CONTROL_PERCENT_MIN;
   const safeTwists = clampFinite(twists, WIRE_CONTROL_LIMITS.TWISTS_MIN, max, max);
+  if (safeTwists <= WIRE_CONTROL_LIMITS.TWISTS_MIN) return WIRE_CONTROL_PERCENT_MIN;
+  if (safeTwists >= max) return WIRE_CONTROL_PERCENT_MAX;
   return roundWireControl((safeTwists / max) * WIRE_CONTROL_PERCENT_MAX);
 }
 
@@ -450,6 +499,58 @@ function minCenterlineSeparation(thickness: number): number {
     WIRE_CONTROL_LIMITS.SEPARATION_MAX,
     WIRE_CONTROL_LIMITS.SEPARATION_MIN,
   );
+}
+
+function wireSeparationBoundsFor(thickness: number, twists: number): { min: number; max: number } {
+  const safeThickness = clampFinite(
+    thickness,
+    WIRE_CONTROL_LIMITS.THICKNESS_MIN,
+    WIRE_CONTROL_LIMITS.THICKNESS_MAX,
+    DEFAULT_CONFIG.WIRE_THICKNESS,
+  );
+  const twistRatio = clampFinite(
+    twists,
+    WIRE_CONTROL_LIMITS.TWISTS_MIN,
+    WIRE_CONTROL_LIMITS.TWISTS_MAX,
+    DEFAULT_CONFIG.WIRE_TWISTS,
+  ) / WIRE_CONTROL_LIMITS.TWISTS_MAX;
+  const thinWeight = thinWireSeparationWeight(safeThickness);
+  const thinMin = lerp(
+    WIRE_CONTROL_LIMITS.THIN_WIRE_SEPARATION_MIN_LOW_TWIST,
+    WIRE_CONTROL_LIMITS.THIN_WIRE_SEPARATION_MIN_HIGH_TWIST,
+    twistRatio,
+  );
+  const thinMax = lerp(
+    WIRE_CONTROL_LIMITS.THIN_WIRE_SEPARATION_MAX_LOW_TWIST,
+    WIRE_CONTROL_LIMITS.THIN_WIRE_SEPARATION_MAX_HIGH_TWIST,
+    twistRatio,
+  );
+  const min = Math.max(
+    minCenterlineSeparation(safeThickness),
+    lerp(WIRE_CONTROL_LIMITS.SEPARATION_MIN, thinMin, thinWeight),
+  );
+  const max = lerp(WIRE_CONTROL_LIMITS.SEPARATION_MAX, thinMax, thinWeight);
+  return {
+    min: Number(min.toFixed(3)),
+    max: Number(Math.max(min, max).toFixed(3)),
+  };
+}
+
+function thinWireSeparationWeight(thickness: number): number {
+  const fadeRange = WIRE_CONTROL_LIMITS.THIN_WIRE_SEPARATION_FADE_END
+    - WIRE_CONTROL_LIMITS.THICKNESS_MIN;
+  if (fadeRange <= 0) return 0;
+  const t = clampFinite(
+    (thickness - WIRE_CONTROL_LIMITS.THICKNESS_MIN) / fadeRange,
+    0,
+    1,
+    1,
+  );
+  return 1 - t * t * (3 - 2 * t);
+}
+
+function lerp(start: number, end: number, amount: number): number {
+  return start + (end - start) * amount;
 }
 
 function clampWireControl(value: number): number {
