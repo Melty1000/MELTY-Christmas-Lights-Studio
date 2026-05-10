@@ -311,7 +311,13 @@ export const CONFIG = {
     TENSION: 0,
 
     // --- QUALITY ---
-    QUALITY: 'medium'
+    QUALITY: 'medium',
+
+    // --- DEBUG / DEVELOPMENT ---
+    BILLBOARD_DEBUG_HIGH_WIRE: false,  // When true, billboard mode uses high quality wires for debugging
+
+    // --- EXPERIMENTAL FEATURES ---
+    USE_WIRE_NETWORK: false  // NEW: When true, uses WireNetwork for socket-top positioning (eliminates dip)
 };
 
 // =========================================

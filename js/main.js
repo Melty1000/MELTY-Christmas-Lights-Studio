@@ -15,6 +15,7 @@ window.ChristmasLights = window.ChristmasLights || {
     version: '1.0.0',
     getFPS: () => getFPS(),
     dispose: () => dispose(),
+    initScene: (forceNew) => initScene(forceNew),  // Exposed for console testing
     CONFIG: CONFIG
 };
 

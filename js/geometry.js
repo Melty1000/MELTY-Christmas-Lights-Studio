@@ -13,8 +13,11 @@ import { logInfo } from './debug.js';
 //  Re-exports from objects/
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Wire classes
+// Wire classes (legacy)
 export { TwistedCurve, Wire } from './objects/wire.js';
+
+// Wire Network classes (new architecture - eliminates socket dip)
+export { SocketAttachment, WireSegment, WireNetwork } from './objects/wire.js';
 
 // Bulb creation
 export { createBulbInstance } from './objects/bulb.js';

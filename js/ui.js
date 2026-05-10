@@ -120,7 +120,7 @@ export function setupUI() {
     // Quality Slider
     const qualitySlider = document.getElementById('quality-slider');
     const qualityLabel = document.getElementById('quality-label-text');
-    const qualityMap = ['low', 'medium', 'high', 'ultra'];
+    const qualityMap = ['billboard', 'medium', 'high', 'ultra'];  // billboard replaces low
     const qualityDisplayMap = ['Low', 'Medium', 'High', 'Ultra High'];
 
     if (qualitySlider) {
@@ -363,19 +363,37 @@ export function setupUI() {
     function updateSeparationMax() {
         if (!thicknessSlider || !separationSlider) return;
         const thickness = parseFloat(thicknessSlider.value);
-        // Linear interpolation: thickness 0.005 → max 0.02, thickness 0.05 → max 0.1
+        // Linear interpolation for separation limits based on thickness
         const minThickness = 0.005, maxThickness = 0.05;
+        const t = Math.max(0, Math.min(1, (thickness - minThickness) / (maxThickness - minThickness)));
+
+        // Min separation: at 0.005 thickness → 0.005 min, at 0.05 thickness → 0.02 min
+        const minSepMin = 0.005, maxSepMin = 0.02;
+        const newMin = minSepMin + t * (maxSepMin - minSepMin);
+
+        // Max separation: at 0.005 thickness → 0.02 max, at 0.05 thickness → 0.1 max  
         const minSepMax = 0.02, maxSepMax = 0.1;
-        const t = (thickness - minThickness) / (maxThickness - minThickness);
         const newMax = minSepMax + t * (maxSepMax - minSepMax);
+
+        separationSlider.min = newMin.toFixed(4);
         separationSlider.max = newMax.toFixed(3);
 
         // Clamp current value if it exceeds new max
-        if (parseFloat(separationSlider.value) > newMax) {
-            separationSlider.value = newMax;
-            CONFIG.WIRE_SEPARATION = newMax;
+        let needsUpdate = false;
+        let newValue = parseFloat(separationSlider.value);
+        if (newValue > newMax) {
+            newValue = newMax;
+            needsUpdate = true;
+        }
+        if (newValue < newMin) {
+            newValue = newMin;
+            needsUpdate = true;
+        }
+        if (needsUpdate) {
+            separationSlider.value = newValue;
+            CONFIG.WIRE_SEPARATION = newValue;
             const label = separationSlider.parentElement.querySelector('.inline-value');
-            if (label) label.textContent = newMax.toFixed(3);
+            if (label) label.textContent = newValue.toFixed(3);
         }
 
         // Update slider fill visual to match new range
@@ -1237,9 +1255,10 @@ export function setupUI() {
     }
 
     document.querySelectorAll('input[type="range"]').forEach(slider => {
+        // Input event: update display values only (during drag)
         slider.addEventListener('input', () => {
             logUser(`Slider input: ${slider.id}`, { value: slider.value });
-            // Immediate updates for particle settings (no debounce needed)
+            // Immediate visual-only updates for particle settings (no rebuild)
             if (slider.id === 'snow-speed-slider') {
                 CONFIG.SNOW_SPEED = parseFloat(slider.value);
             } else if (slider.id === 'snow-size-slider') {
@@ -1247,6 +1266,11 @@ export function setupUI() {
             } else if (slider.id === 'drift-slider') {
                 CONFIG.SNOW_DRIFT = parseFloat(slider.value);
             }
+            // Note: no triggerLiveUpdate here - we wait for mouseup
+        });
+        // Change event: apply changes only on mouseup/release
+        slider.addEventListener('change', () => {
+            logUser(`Slider change (mouseup): ${slider.id}`, { value: slider.value });
             triggerLiveUpdate();
         });
     });

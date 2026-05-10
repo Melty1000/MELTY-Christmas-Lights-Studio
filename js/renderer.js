@@ -9,15 +9,18 @@ import * as THREE from 'three';
 import { CONFIG, THEMES, WIRE_THEMES, SOCKET_THEMES } from './config.js';
 import { updateCameraBase, applyFinalPosition } from './config.js';
 import { getBulbPalette, showToast, dismissToast, updateToastProgress } from './utils.js';
-import { Wire, createBulbInstance, createStars, updateStars, createSnowParticles, updateSnow, generateBasePoints, shouldRecreateSnow, shouldRecreateStars } from './geometry.js';
+import { Wire, WireNetwork, createBulbInstance, createStars, updateStars, createSnowParticles, updateSnow, generateBasePoints, shouldRecreateSnow, shouldRecreateStars } from './geometry.js';
 import { initPostFX, sceneBloom, createBloomClone, syncBloomTransforms, renderWithPostFX, resizePostFX, lastRenderInfo } from './postfx.js';
 import { initSparkleSystem, updateSparkleSystem, disposeSparkleSystem } from './effects/sparkle.js';
+import { BillboardBulbInstances, disposeSharedGeometries } from './objects/billboard-instances.js';
 import { debug, logInit, logPerf, logInfo, startTimer, endTimer, logGeom, logError } from './debug.js';
 
 // Declare mutable globals locally (can't import them - imports are read-only)
 let container, renderer, camera;
 let animationFrameId = null;
 let activeScene, activeLights, activeTwistedWire;
+let activeWireNetwork = null;  // NEW: Wire network for socket-top positioning
+let activeBillboardInstances = null;  // For billboard mode instanced rendering
 let activePoints = [];
 let originalBasePoints = [];
 let stars = null;
@@ -54,6 +57,107 @@ function createStatsPanel() {
     `;
     document.body.appendChild(statsPanel);
 }
+
+// Z-offset debug panel for tuning parallax
+let zDebugPanel = null;
+window.zDebugOffsets = {
+    parallaxStrength: 15,  // Parallax compensation (needs to be high since Z offsets are small)
+    wireA: 0,
+    wireB: 0,
+    glassZ: 0.04,
+    glassY: -1.40,
+    filamentZ: 0.03,
+    filamentY: -0.80,
+    socketZ: 0.05,
+    socketY: -1.75
+};
+
+function createZDebugPanel() {
+    if (zDebugPanel) return;
+    zDebugPanel = document.createElement('div');
+    zDebugPanel.id = 'z-debug-panel';
+    zDebugPanel.style.cssText = `
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        background: rgba(0,0,0,0.9);
+        color: #fff;
+        font-family: monospace;
+        font-size: 11px;
+        padding: 12px;
+        border-radius: 6px;
+        z-index: 10001;
+        min-width: 220px;
+        border: 1px solid #f80;
+        max-height: 90vh;
+        overflow-y: auto;
+    `;
+
+    const createSlider = (label, key, min, max, step) => {
+        const val = window.zDebugOffsets[key];
+        return `
+            <div style="margin-bottom: 8px;">
+                <label style="display:block;color:#f80;">${label}: <span id="z-val-${key}">${val.toFixed(2)}</span></label>
+                <input type="range" id="z-slider-${key}" 
+                    min="${min}" max="${max}" step="${step}" value="${val}"
+                    style="width: 100%; accent-color: #f80;">
+            </div>
+        `;
+    };
+
+    zDebugPanel.innerHTML = `
+        <div style="color:#f80; font-weight:bold; margin-bottom:10px; border-bottom:1px solid #f80; padding-bottom:5px;">
+            BILLBOARD DEBUG
+        </div>
+        <div style="color:#aaa; font-size:10px; margin-bottom:8px;">Wire Z Positions</div>
+        ${createSlider('Wire A Z', 'wireA', -2, 2, 0.05)}
+        ${createSlider('Wire B Z', 'wireB', -2, 2, 0.05)}
+        <div style="color:#aaa; font-size:10px; margin-bottom:8px; margin-top:12px;">Bulb Y Offsets</div>
+        ${createSlider('Glass Y', 'glassY', -3, 0, 0.05)}
+        ${createSlider('Filament Y (rel)', 'filamentY', -2, 0, 0.05)}
+        ${createSlider('Socket Y', 'socketY', -3, 0, 0.05)}
+        <button id="z-debug-apply" style="width:100%; margin-top:10px; padding:5px; background:#f80; color:#000; border:none; cursor:pointer; font-weight:bold;">
+            Apply & Rebuild
+        </button>
+    `;
+
+    document.body.appendChild(zDebugPanel);
+
+    // Add event listeners
+    ['wireA', 'wireB', 'glassY', 'filamentY', 'socketY'].forEach(key => {
+        const slider = document.getElementById(`z-slider-${key}`);
+        const valSpan = document.getElementById(`z-val-${key}`);
+        if (slider) {
+            slider.addEventListener('input', () => {
+                window.zDebugOffsets[key] = parseFloat(slider.value);
+                valSpan.textContent = parseFloat(slider.value).toFixed(2);
+            });
+        }
+    });
+
+    document.getElementById('z-debug-apply').addEventListener('click', () => {
+        console.log('Z-Debug Offsets:', window.zDebugOffsets);
+        if (window.initScene) window.initScene();
+    });
+}
+
+function removeZDebugPanel() {
+    if (zDebugPanel) {
+        zDebugPanel.remove();
+        zDebugPanel = null;
+    }
+}
+
+// Toggle Z debug panel with Ctrl+Shift+Z
+document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'Z') {
+        if (zDebugPanel) {
+            removeZDebugPanel();
+        } else {
+            createZDebugPanel();
+        }
+    }
+});
 
 function removeStatsPanel() {
     if (statsPanel) {
@@ -132,6 +236,7 @@ let isInitializing = false;
 let pendingInitTimeout = null;
 
 export function initScene(forceNewBake = false) {
+    window.initScene = initScene;  // Expose to window for debug panel
     logInit('initScene() called', { forceNewBake });
     startTimer('initScene-total');
 
@@ -427,24 +532,97 @@ async function _initSceneInternal(loadingToastId, forceNewBake = false) {
     logInit(`Creating ${totalLights} bulbs (${numberOfSpans} spans × ${lightsPerSpan} lights)...`);
     startTimer('bulb-creation-loop');
 
-    for (let span = 0; span < numberOfSpans; span++) {
-        const startT = span * spanLength;
-        const slotSize = spanLength / lightsPerSpan;
+    // Billboard mode: use instanced mesh for all bulbs (3 draw calls instead of totalLights×3)
+    const isBillboardMode = CONFIG.QUALITY === 'billboard';
 
-        for (let i = 0; i < lightsPerSpan; i++) {
-            const t = startT + (slotSize * (i + 0.5));
-            const color = shuffledColors[lightCounter % shuffledColors.length];
-            // Pass correct wire color based on which wire this bulb attaches to (even=A, odd=B)
-            const attachedWireColor = (lightCounter % 2 === 0) ? wireColors.A : wireColors.B;
-            const l = createBulbInstance(color, selectedPalette, attachedWireColor);
+    if (isBillboardMode) {
+        logInit('Using instanced mesh rendering for billboard mode');
 
-            l.position.copy(hangingCurve.getPointAt(t));
-            l.userData.tLocation = t;
+        // Clean up previous instances if they exist
+        if (activeBillboardInstances) {
+            activeBillboardInstances.dispose();
+            activeBillboardInstances = null;
+        }
 
-            stringGroup.add(l);
-            activeLights.push(l);
-            l.userData.wireColorIndex = lightCounter % 2;  // Store which wire color this bulb uses (0=A, 1=B)
-            lightCounter++;
+        // Create new instanced mesh manager
+        activeBillboardInstances = new BillboardBulbInstances(totalLights, activeScene, wireColors);
+
+        // Determine socket color source
+        const isWireMatch = CONFIG.SOCKET_THEME === 'WIRE_MATCH' || !SOCKET_THEMES[CONFIG.SOCKET_THEME];
+        const fixedSocketColor = isWireMatch ? null : SOCKET_THEMES[CONFIG.SOCKET_THEME];
+
+        // Set up each instance
+        const identityQuaternion = new THREE.Quaternion();
+
+        for (let span = 0; span < numberOfSpans; span++) {
+            const startT = span * spanLength;
+            const slotSize = spanLength / lightsPerSpan;
+
+            for (let i = 0; i < lightsPerSpan; i++) {
+                const t = startT + (slotSize * (i + 0.5));
+                const color = shuffledColors[lightCounter % shuffledColors.length];
+                const position = hangingCurve.getPointAt(t);
+
+                // Determine socket color (WIRE_MATCH = alternating wire colors, or fixed theme color)
+                const socketColor = isWireMatch
+                    ? (lightCounter % 2 === 0 ? wireColors.A : wireColors.B)
+                    : fixedSocketColor;
+
+                // Set instance data (position, rotation, scale, color, socketColor)
+                activeBillboardInstances.setInstance(
+                    lightCounter,
+                    position,
+                    identityQuaternion,
+                    new THREE.Vector3(1, 1, 1),
+                    color,
+                    socketColor,
+                    1.0  // Initial emissive intensity
+                );
+
+                // Store bulb data for animation compatibility
+                activeLights.push({
+                    position: position.clone(),
+                    userData: {
+                        tLocation: t,
+                        wireColorIndex: lightCounter % 2,
+                        instanceIndex: lightCounter,
+                        currentIntensity: 1.0,
+                        targetIntensity: 1.0,
+                        state: 'HOLD',
+                        timer: Math.random() * 1.0,
+                        baseColor: new THREE.Color(color),
+                        isBillboardInstance: true
+                    }
+                });
+
+                lightCounter++;
+            }
+        }
+
+        // Mark matrices as needing update
+        activeBillboardInstances.updateMatrices();
+
+    } else {
+        // Standard mode: create individual bulb meshes
+        for (let span = 0; span < numberOfSpans; span++) {
+            const startT = span * spanLength;
+            const slotSize = spanLength / lightsPerSpan;
+
+            for (let i = 0; i < lightsPerSpan; i++) {
+                const t = startT + (slotSize * (i + 0.5));
+                const color = shuffledColors[lightCounter % shuffledColors.length];
+                // Pass correct wire color based on which wire this bulb attaches to (even=A, odd=B)
+                const attachedWireColor = (lightCounter % 2 === 0) ? wireColors.A : wireColors.B;
+                const l = createBulbInstance(color, selectedPalette, attachedWireColor);
+
+                l.position.copy(hangingCurve.getPointAt(t));
+                l.userData.tLocation = t;
+
+                stringGroup.add(l);
+                activeLights.push(l);
+                l.userData.wireColorIndex = lightCounter % 2;  // Store which wire color this bulb uses (0=A, 1=B)
+                lightCounter++;
+            }
         }
     }
 
@@ -452,6 +630,21 @@ async function _initSceneInternal(loadingToastId, forceNewBake = false) {
     logInit(`✅ Created ${activeLights.length} bulbs`);
 
     activeTwistedWire.setAttachmentPoints(activeLights);
+
+    // NEW: Create WireNetwork for socket-top positioning (no dip geometry)
+    // This is opt-in for now - set CONFIG.USE_WIRE_NETWORK = true to enable
+    if (CONFIG.USE_WIRE_NETWORK) {
+        activeWireNetwork = new WireNetwork(hangingCurve, {
+            turns: CONFIG.WIRE_TWISTS,
+            offset: CONFIG.WIRE_SEPARATION,
+            thickness: CONFIG.WIRE_THICKNESS,
+            bulbScale: CONFIG.BULB_SCALE
+        });
+        activeWireNetwork.setAttachmentPoints(activeLights);
+        logInit('WireNetwork created for socket-top positioning');
+    } else {
+        activeWireNetwork = null;
+    }
 
     // Async geometry with progress reporting
     logGeom('Starting async geometry computation');
@@ -679,6 +872,22 @@ function updateSwaySystem(t) {
             // Direct calculation mode (cache disabled)
             activeTwistedWire.calculatePointsForPhase(tPhase, activePoints, originalBasePoints);
             activeTwistedWire.updateGeometry();
+
+            // Update billboard bulb positions to follow swayed wire
+            // Use SAME logic as 3D bulbs: curve1/curve2 with getPoint(u)
+            if (activeBillboardInstances && activeLights.length > 0) {
+                const identityQuaternion = new THREE.Quaternion();
+                activeLights.forEach((light, index) => {
+                    const u = light.userData.tLocation;
+                    const isEven = index % 2 === 0;
+                    const attachedCurve = isEven ? activeTwistedWire.curve1 : activeTwistedWire.curve2;
+                    const pos = attachedCurve.getPoint(u);  // getPoint, not getPointAt
+
+                    // Update instance position (keeping same color/socketColor/emissive)
+                    activeBillboardInstances.updatePosition(index, pos, identityQuaternion);
+                });
+                activeBillboardInstances.updateMatrices();
+            }
         }
     } else if (hasSway && !hasSpeed) {
         // Sway on but speed is 0 - apply static position
@@ -952,9 +1161,18 @@ function updateLightTwinkle(light, index, time, deltaTime, timeFactor, globalInd
     //  APPLY FINAL INTENSITY
     // ═══════════════════════════════════════════════════════════════════════════
     const intensity = data.currentIntensity;
-    data.glass.emissiveIntensity = CONFIG.EMISSIVE_INTENSITY * intensity;
-    data.filament.emissive.copy(data.baseFilament);
-    data.filament.emissiveIntensity = intensity;
+
+    // Billboard instance bulbs: update via instance manager
+    if (data.isBillboardInstance && activeBillboardInstances) {
+        activeBillboardInstances.updateEmissive(data.instanceIndex, intensity);
+    } else {
+        // Standard mesh bulbs: update material properties directly
+        data.glass.emissiveIntensity = CONFIG.EMISSIVE_INTENSITY * intensity;
+        if (data.filament) {
+            data.filament.emissive.copy(data.baseFilament);
+            data.filament.emissiveIntensity = intensity;
+        }
+    }
 
     // Sync point light if present
     if (data.pointLight) {
@@ -1073,25 +1291,72 @@ export function animate(time) {
     activeLights.forEach((light, index) => {
         const u = light.userData.tLocation;
 
+        // Billboard instances: skip positioning (managed by InstancedMesh), only update twinkle
+        if (light.userData.isBillboardInstance) {
+            updateLightTwinkle(light, index, time, deltaTime, timeFactor, index, activeLights.length);
+            return;
+        }
+
         const isEven = index % 2 === 0;
-        const attachedCurve = isEven ? activeTwistedWire.curve1 : activeTwistedWire.curve2;
 
-        const pos = attachedCurve.getPoint(u);
-        const tan = attachedCurve.getTangent(u).normalize();
+        // NEW: Use WireNetwork if available (socket-top positioning)
+        let pos, tan;
+        if (activeWireNetwork) {
+            const attachment = activeWireNetwork.getAttachment(index);
+            if (attachment) {
+                pos = attachment.position;
+                tan = attachment.tangent;
+            } else {
+                // Fallback to legacy curve
+                const attachedCurve = isEven ? activeTwistedWire.curve1 : activeTwistedWire.curve2;
+                pos = attachedCurve.getPoint(u);
+                tan = attachedCurve.getTangent(u).normalize();
+            }
+        } else {
+            // Legacy: use TwistedCurve (with dip)
+            const attachedCurve = isEven ? activeTwistedWire.curve1 : activeTwistedWire.curve2;
+            pos = attachedCurve.getPoint(u);
+            tan = attachedCurve.getTangent(u).normalize();
+        }
 
-        // Orient the bulb (using reusable vectors to avoid GC)
-        _tempUp.set(0, 1, 0);
-        _tempRight.crossVectors(_tempUp, tan).normalize();
+        // Calculate tangent-based vectors for positioning (needed by both modes)
+        // Handle near-vertical tangent (near pin points) with fallback reference
+        const tanYAlign = Math.abs(tan.y);
+        if (tanYAlign > 0.95) {
+            // Tangent nearly vertical - use world-right as reference instead
+            _tempUp.set(1, 0, 0);
+        } else {
+            _tempUp.set(0, 1, 0);
+        }
+        _tempRight.crossVectors(_tempUp, tan);
+        if (_tempRight.lengthSq() < 0.001) {
+            // Fallback if still degenerate
+            _tempRight.set(1, 0, 0);
+        }
+        _tempRight.normalize();
         _tempDown.crossVectors(tan, _tempRight).normalize();
 
-        light.rotation.set(0, 0, Math.PI);
-        light.rotateY((Math.sin(u * 100) - 0.5) * 0.2);
-        light.quaternion.setFromUnitVectors(_tempUnitDown, _tempDown);
+        // Orient the bulb
+        if (light.userData.isBillboard) {
+            // Billboard mode: face camera for flat 2D appearance
+            light.lookAt(camera.position);
+        } else {
+            // 3D mode: bulbs hang naturally due to correct geometry in bulb.js
+            // Slight Y rotation for visual interest
+            light.rotation.set(0, (Math.sin(u * 100) - 0.5) * 0.2, 0);
+        }
 
-        // Position bulb, then offset along negative 'down' (bulb's local UP)
-        // This moves socket TOP toward wire attachment point
-        const socketOffset = 0.3 * CONFIG.BULB_SCALE;
-        light.position.copy(pos).addScaledVector(_tempDown, -socketOffset);
+        // Position bulb at wire attachment point
+        // New bulb.js: socket top is at Y=0, so wire point = socket top
+        // The wire provides the connection point, bulb hangs down from there
+        if (light.userData.isBillboard) {
+            // Billboard: copy position directly (billboard geometry already correct)
+            light.position.copy(pos);
+        } else {
+            // 3D mode: copy position directly
+            // New bulb.js has socket top at Y=0, so pos = socket top
+            light.position.copy(pos);
+        }
 
         light.updateMatrixWorld();
 
