@@ -1,29 +1,39 @@
-import { StrictMode } from 'react';
+import { lazy, StrictMode, Suspense, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider, createBrowserRouter } from 'react-router-dom';
 import './styles/index.css';
-import { ControlPanel } from './routes/ControlPanel.tsx';
-import { Overlay } from './routes/Overlay.tsx';
 import { loadMeltTheme } from './lib/theme.ts';
-import { Studio } from './pages/Studio.tsx';
-import { Support } from './pages/Support.tsx';
-import { Settings } from './pages/Settings.tsx';
+import { STUDIO_TABS } from './lib/studioTabs.ts';
+
+const ControlPanel = lazy(() => import('./routes/ControlPanel.tsx').then((module) => ({ default: module.ControlPanel })));
+const Overlay = lazy(() => import('./routes/Overlay.tsx').then((module) => ({ default: module.Overlay })));
+const Studio = lazy(() => import('./pages/Studio.tsx').then((module) => ({ default: module.Studio })));
+const Support = lazy(() => import('./pages/Support.tsx').then((module) => ({ default: module.Support })));
+const Settings = lazy(() => import('./pages/Settings.tsx').then((module) => ({ default: module.Settings })));
+
+function route(element: ReactNode) {
+  return <Suspense fallback={null}>{element}</Suspense>;
+}
 
 loadMeltTheme();
 
 const router = createBrowserRouter([
   {
     path: '/',
-    element: <ControlPanel />,
+    element: route(<ControlPanel />),
     children: [
-      { index: true, element: <Studio /> },
-      { path: 'support', element: <Support /> },
-      { path: 'settings', element: <Settings /> },
+      ...STUDIO_TABS.map((tab) =>
+        tab.path
+          ? { path: tab.path, element: route(<Studio />) }
+          : { index: true, element: route(<Studio />) },
+      ),
+      { path: 'support', element: route(<Support />) },
+      { path: 'settings', element: route(<Settings />) },
     ],
   },
   {
     path: '/overlay',
-    element: <Overlay />,
+    element: route(<Overlay />),
   },
 ]);
 

@@ -26,3 +26,6 @@ Thumbs.db
 Devlogs
 Devlogs.*
 debug/
+logs/
+.codex/
+.codex-run/

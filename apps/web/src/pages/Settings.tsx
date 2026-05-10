@@ -9,6 +9,7 @@ import {
   SelectField,
   StatusPill,
 } from '~/components/controls/ControlPrimitives.tsx';
+import { AdvancedWireTuningPanel } from '~/components/controls/WireControls.tsx';
 import {
   MELT_THEME_OPTIONS,
   applyMeltTheme,
@@ -111,6 +112,10 @@ export function Settings() {
             ) : null}
           </MessageBanner>
         </Panel>
+      </SectionGrid>
+
+      <SectionGrid columns={1}>
+        <AdvancedWireTuningPanel />
       </SectionGrid>
     </PageRoot>
   );

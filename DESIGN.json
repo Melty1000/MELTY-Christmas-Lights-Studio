@@ -1,0 +1,326 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-08T04:36:42.1951173-05:00",
+  "title": "Design System: Melty's Christmas Lights Studio",
+  "extensions": {
+    "colorMeta": {
+      "graphite-void": {
+        "role": "neutral",
+        "displayName": "Graphite Void",
+        "canonical": "#050505",
+        "tonalRamp": ["#050505", "#0a0a0b", "#111113", "#1b1b1e", "#2a2a2f", "#4a4a52", "#8a8a95", "#e4e4e7"]
+      },
+      "graphite-frame": {
+        "role": "neutral",
+        "displayName": "Graphite Frame",
+        "canonical": "#0c0c0e",
+        "tonalRamp": ["#050506", "#0c0c0e", "#151519", "#202027", "#32323a", "#555560", "#9a9aa3", "#e4e4e7"]
+      },
+      "graphite-surface": {
+        "role": "neutral",
+        "displayName": "Graphite Surface",
+        "canonical": "#18181b",
+        "tonalRamp": ["#070708", "#101012", "#18181b", "#242428", "#36363d", "#5c5c66", "#a3a3ad", "#ececef"]
+      },
+      "slate-frame": {
+        "role": "neutral",
+        "displayName": "Slate Frame",
+        "canonical": "#0e1115",
+        "tonalRamp": ["#060708", "#0e1115", "#171c22", "#222933", "#343e4b", "#5b6674", "#a5adba", "#edf1f5"]
+      },
+      "slate-surface": {
+        "role": "neutral",
+        "displayName": "Slate Surface",
+        "canonical": "#1c1f26",
+        "tonalRamp": ["#08090b", "#11141a", "#1c1f26", "#2a2f39", "#3e4653", "#687484", "#adb6c2", "#f0f3f6"]
+      },
+      "ember-accent": {
+        "role": "primary",
+        "displayName": "Signal Ember",
+        "canonical": "#f2af0d",
+        "tonalRamp": ["#271900", "#4a3002", "#724c04", "#9c6a06", "#c98c09", "#f2af0d", "#ffc955", "#ffe8ad"]
+      },
+      "ember-accent-hover": {
+        "role": "primary",
+        "displayName": "Hot Filament",
+        "canonical": "#ffc130",
+        "tonalRamp": ["#281d03", "#4e3906", "#78580b", "#a77c11", "#d8a219", "#ffc130", "#ffd66d", "#ffedbd"]
+      },
+      "cobalt-accent": {
+        "role": "secondary",
+        "displayName": "Control Cobalt",
+        "canonical": "#1d4267",
+        "tonalRamp": ["#07101a", "#0d2033", "#143150", "#1d4267", "#2d5f90", "#4f82b6", "#8fb4d7", "#d7e8f6"]
+      },
+      "cobalt-accent-hover": {
+        "role": "secondary",
+        "displayName": "Cobalt Lift",
+        "canonical": "#355c85",
+        "tonalRamp": ["#08111b", "#13263b", "#23415f", "#355c85", "#5179a6", "#7fa3c5", "#b5cfe4", "#e4f0f8"]
+      },
+      "text-heading": {
+        "role": "neutral",
+        "displayName": "Zinc Heading",
+        "canonical": "#e4e4e7",
+        "tonalRamp": ["#18181b", "#27272a", "#3f3f46", "#52525b", "#71717a", "#a1a1aa", "#d4d4d8", "#e4e4e7"]
+      },
+      "text-body": {
+        "role": "neutral",
+        "displayName": "Zinc Body",
+        "canonical": "#d4d4d4",
+        "tonalRamp": ["#171717", "#262626", "#404040", "#525252", "#737373", "#a3a3a3", "#d4d4d4", "#eeeeee"]
+      },
+      "text-label": {
+        "role": "neutral",
+        "displayName": "Zinc Label",
+        "canonical": "#a1a1aa",
+        "tonalRamp": ["#18181b", "#27272a", "#3f3f46", "#52525b", "#71717a", "#a1a1aa", "#d4d4d8", "#f4f4f5"]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Zinc Muted",
+        "canonical": "#71717a",
+        "tonalRamp": ["#111113", "#27272a", "#3f3f46", "#52525b", "#71717a", "#a1a1aa", "#d4d4d8", "#f4f4f5"]
+      },
+      "success": {
+        "role": "status",
+        "displayName": "Live Emerald",
+        "canonical": "#34d399",
+        "tonalRamp": ["#052015", "#064e3b", "#047857", "#059669", "#10b981", "#34d399", "#6ee7b7", "#d1fae5"]
+      },
+      "danger": {
+        "role": "status",
+        "displayName": "Delete Red",
+        "canonical": "#ef4444",
+        "tonalRamp": ["#2b0707", "#7f1d1d", "#991b1b", "#b91c1c", "#dc2626", "#ef4444", "#fca5a5", "#fee2e2"]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Broadcast Title",
+        "purpose": "Panel titles, preset names, and navigation labels."
+      },
+      "body": {
+        "displayName": "Compact Body",
+        "purpose": "Descriptions, helper text, messages, and readable inline content."
+      },
+      "label": {
+        "displayName": "Instrument Label",
+        "purpose": "Controls, status pills, headers, tabs, and compact navigation."
+      },
+      "mono": {
+        "displayName": "Precision Mono",
+        "purpose": "Numeric values, preset ids, URLs, and code-like snippets."
+      }
+    },
+    "shadows": [
+      {
+        "name": "accent-glow",
+        "value": "0 0 20px var(--melt-accent-glow)",
+        "purpose": "Selected or emphasized light states only."
+      },
+      {
+        "name": "active-rail-glow",
+        "value": "0 0 16px rgba(255,179,0,0.55)",
+        "purpose": "Selected light rail inside miniature layout controls."
+      },
+      {
+        "name": "micro-frame",
+        "value": "0 0 0 1px rgba(255,255,255,0.01)",
+        "purpose": "Subtle containment for preview and avatar surfaces."
+      },
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 3px rgba(227,178,91,0.12)",
+        "purpose": "Focused inputs and selects."
+      }
+    ],
+    "motion": [
+      {
+        "name": "sidebar-expand",
+        "value": "500ms power2.inOut",
+        "purpose": "Sidebar width expansion and active rail movement."
+      },
+      {
+        "name": "sidebar-collapse",
+        "value": "370ms power2.inOut, timeScale 1.35",
+        "purpose": "Faster shell return after hover leave."
+      },
+      {
+        "name": "nav-icon",
+        "value": "450ms cubic-bezier(0.455, 0.03, 0.515, 0.955)",
+        "purpose": "Icon scale and rotation inside the sidebar."
+      },
+      {
+        "name": "field-state",
+        "value": "150-200ms ease-out",
+        "purpose": "Buttons, toggles, borders, and compact control state changes."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "lg",
+        "value": "1024px"
+      },
+      {
+        "name": "xl",
+        "value": "1280px"
+      },
+      {
+        "name": "2xl",
+        "value": "1536px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Compact primary command for save, copy, and high-value actions.",
+      "html": "<button class=\"ds-btn-primary\">Save Preset</button>",
+      "css": ".ds-btn-primary { height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--melt-accent, #f2af0d); border-radius: 6px; background: var(--melt-accent, #f2af0d); color: var(--melt-frame, #0c0c0e); padding: 0 12px; font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; font-size: 10px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; transition: background 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out; } .ds-btn-primary:hover { background: var(--melt-accent-hover, #ffc130); border-color: var(--melt-accent-hover, #ffc130); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(227,178,91,0.18); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Quiet command for export, import, refresh, and secondary utilities.",
+      "html": "<button class=\"ds-btn-secondary\">Export JSON</button>",
+      "css": ".ds-btn-secondary { height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid color-mix(in srgb, var(--melt-text-muted, #71717a) 15%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--melt-surface, #18181b) 30%, transparent); color: var(--melt-text-heading, #e4e4e7); padding: 0 12px; font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; font-size: 10px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; transition: color 150ms ease-out, border-color 150ms ease-out, background 150ms ease-out; } .ds-btn-secondary:hover { border-color: color-mix(in srgb, var(--melt-accent, #f2af0d) 30%, transparent); color: var(--melt-accent, #f2af0d); } .ds-btn-secondary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(227,178,91,0.12); }"
+    },
+    {
+      "name": "Select Field",
+      "kind": "input",
+      "refersTo": "input-default",
+      "description": "Compact option control used throughout the studio panels.",
+      "html": "<label class=\"ds-select-row\"><span>Bulb theme</span><select><option>Classic</option><option>Rainbow</option></select></label>",
+      "css": ".ds-select-row { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 12px; color: var(--melt-text-label, #a1a1aa); font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; font-size: 11px; font-weight: 600; letter-spacing: .025em; } .ds-select-row select { height: 32px; width: 100%; appearance: none; border: 1px solid color-mix(in srgb, var(--melt-text-muted, #71717a) 15%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--melt-frame, #0c0c0e) 70%, transparent); color: var(--melt-text-heading, #e4e4e7); padding: 0 28px 0 10px; font-size: 12px; font-weight: 500; transition: border-color 150ms ease-out, background 150ms ease-out, box-shadow 150ms ease-out; } .ds-select-row select:hover { border-color: color-mix(in srgb, var(--melt-text-muted, #71717a) 30%, transparent); background: color-mix(in srgb, var(--melt-frame, #0c0c0e) 90%, transparent); } .ds-select-row select:focus-visible { outline: none; border-color: color-mix(in srgb, var(--melt-accent, #f2af0d) 60%, transparent); box-shadow: 0 0 0 3px rgba(227,178,91,0.12); }"
+    },
+    {
+      "name": "Range Field",
+      "kind": "input",
+      "refersTo": "input-default",
+      "description": "Precision slider row with label, range track, and numeric value.",
+      "html": "<label class=\"ds-range-row\"><span>Bulb scale</span><input type=\"range\" value=\"64\" min=\"0\" max=\"100\" /><input type=\"number\" value=\"64\" /></label>",
+      "css": ".ds-range-row { display: grid; grid-template-columns: 120px 1fr 64px; align-items: center; gap: 12px; color: var(--melt-text-label, #a1a1aa); font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; font-size: 11px; font-weight: 600; letter-spacing: .025em; } .ds-range-row input[type='range'] { width: 100%; height: 8px; accent-color: var(--melt-accent, #f2af0d); } .ds-range-row input[type='number'] { height: 28px; border: 1px solid color-mix(in srgb, var(--melt-text-muted, #71717a) 15%, transparent); border-radius: 4px; background: color-mix(in srgb, var(--melt-frame, #0c0c0e) 60%, transparent); color: var(--melt-text-heading, #e4e4e7); padding: 0 8px; text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; } .ds-range-row input[type='number']:focus-visible { outline: none; border-color: color-mix(in srgb, var(--melt-accent, #f2af0d) 50%, transparent); }"
+    },
+    {
+      "name": "Status Pill",
+      "kind": "chip",
+      "refersTo": "status-pill",
+      "description": "Tiny broadcast status marker for API, Streamer.bot, loading, and selected states.",
+      "html": "<span class=\"ds-status-pill\">API Connected</span>",
+      "css": ".ds-status-pill { display: inline-flex; align-items: center; height: 24px; border: 1px solid rgba(52,211,153,0.25); border-radius: 999px; background: rgba(52,211,153,0.10); color: #a7f3d0; padding: 0 10px; font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; font-size: 9px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; }"
+    },
+    {
+      "name": "Sidebar Nav Item",
+      "kind": "nav",
+      "refersTo": "sidebar-nav-active",
+      "description": "Tool-rail navigation item with active accent fill and compact label.",
+      "html": "<a class=\"ds-nav-item\" href=\"#\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/></svg><span>Lighting</span></a>",
+      "css": ".ds-nav-item { height: 40px; display: inline-flex; align-items: center; gap: 10px; border-radius: 6px; background: var(--melt-accent, #f2af0d); color: var(--melt-frame, #0c0c0e); padding: 0 12px; text-decoration: none; font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; font-size: 10px; font-weight: 900; letter-spacing: 0.28em; text-transform: uppercase; transition: transform 450ms cubic-bezier(0.455,0.03,0.515,0.955); } .ds-nav-item svg { width: 20px; height: 20px; flex: none; transform: rotate(-10deg) scale(1.2); } .ds-nav-item:hover { transform: translateX(2px); } .ds-nav-item:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(227,178,91,0.18); }"
+    },
+    {
+      "name": "Code Block",
+      "kind": "card",
+      "refersTo": "input-default",
+      "description": "Compact URL, preset id, or generated value block.",
+      "html": "<div class=\"ds-code-block\"><div>OBS source</div><code>https://lights.melty.lol/overlay</code></div>",
+      "css": ".ds-code-block { border: 1px solid color-mix(in srgb, var(--melt-text-muted, #71717a) 15%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--melt-frame, #0c0c0e) 60%, transparent); color: var(--melt-text-heading, #e4e4e7); padding: 8px 12px; font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; } .ds-code-block div { color: var(--melt-text-muted, #71717a); font-size: 9px; font-weight: 900; letter-spacing: 0.22em; text-transform: uppercase; } .ds-code-block code { display: block; margin-top: 4px; color: var(--melt-text-heading, #e4e4e7); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }"
+    },
+    {
+      "name": "Preset Card",
+      "kind": "card",
+      "refersTo": "button-secondary",
+      "description": "Selectable compact row for saved or built-in stream looks.",
+      "html": "<article class=\"ds-preset-card\"><div><strong>Stage Look</strong><code>stage-look</code></div><span>Custom</span></article>",
+      "css": ".ds-preset-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in srgb, var(--melt-accent, #f2af0d) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--melt-accent, #f2af0d) 10%, transparent); padding: 10px 12px; font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; } .ds-preset-card strong { display: block; color: var(--melt-text-heading, #e4e4e7); font-size: 12px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; } .ds-preset-card code { display: block; margin-top: 2px; color: var(--melt-text-muted, #71717a); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10px; } .ds-preset-card span { border: 1px solid color-mix(in srgb, var(--melt-accent, #f2af0d) 25%, transparent); border-radius: 999px; color: var(--melt-accent, #f2af0d); padding: 2px 8px; font-size: 9px; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }"
+    },
+    {
+      "name": "Social Link",
+      "kind": "custom",
+      "refersTo": "button-secondary",
+      "description": "Higher-energy creator support link, reserved for support and community surfaces.",
+      "html": "<a class=\"ds-social-link\" href=\"#\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 21s-7-4.35-7-10a4 4 0 0 1 7-2.65A4 4 0 0 1 19 11c0 5.65-7 10-7 10Z\" fill=\"currentColor\"/></svg><span>Support</span></a>",
+      "css": ".ds-social-link { position: relative; height: 52px; width: 220px; display: inline-flex; align-items: center; overflow: hidden; border-radius: 16px; color: var(--melt-text-label, #a1a1aa); text-decoration: none; font-family: Aptos, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; transition: color 300ms ease-out, background 300ms ease-out; } .ds-social-link svg { position: absolute; left: 16px; width: 18px; height: 18px; color: var(--melt-accent, #f2af0d); transform: scale(1.55); transition: left 500ms ease-out, transform 500ms ease-out, color 300ms ease-out; } .ds-social-link span { margin-left: auto; margin-right: 24px; font-size: 10px; font-weight: 900; letter-spacing: 0.3em; text-transform: uppercase; opacity: .8; transition: transform 400ms ease-out, opacity 400ms ease-out; } .ds-social-link:hover { background: var(--melt-accent, #f2af0d); color: var(--melt-surface, #18181b); } .ds-social-link:hover svg { left: 50%; transform: translateX(-50%) scale(1.55) rotate(-8deg); color: var(--melt-surface, #18181b); } .ds-social-link:hover span { transform: translateX(40px); opacity: 0; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Broadcast Light Lab",
+    "overview": "The studio should feel like a focused broadcast lab for shaping light, not a generic settings page. The surface is dark, compact, and operational so the overlay remains the visual star. Warm amber and optional cobalt accents behave like instrument lights: rare, directional, and tied to selection, status, and decisive actions.\n\nThis is a product tool first. It should make first-time setup clear, keep deep customization organized, and preserve the premium feel of the output without burying advanced controls behind decoration. Personality comes from the Melty mark, motion details, compact typography, and the light-focused preview language, not from novelty holiday styling.\n\nThe system explicitly rejects generic SaaS dashboards, sterile admin panels, outdated OBS plugin interfaces, overly cute holiday toy styling, cluttered novelty controls, and visual treatments that make the UI look heavier than the overlay it controls.",
+    "keyCharacteristics": [
+      "Dense but readable control surfaces.",
+      "Dark graphite and slate layers with a single active accent.",
+      "Compact uppercase labels, small numeric fields, and clear live-status affordances.",
+      "Tonal separation over heavy shadows.",
+      "Creator-first workflows: preview, presets, OBS, Streamer.bot, save, export."
+    ],
+    "rules": [
+      {
+        "name": "The Instrument Light Rule",
+        "body": "Accent color marks active state, command, focus, or status. It is not page decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Accent Rule",
+        "body": "Amber and cobalt are theme alternatives. Do not use both as competing accents in one studio surface unless the second color is data or external brand color.",
+        "section": "colors"
+      },
+      {
+        "name": "The Preview First Rule",
+        "body": "The control UI stays darker and quieter than the live overlay preview, so the creator keeps attention on the stream output.",
+        "section": "colors"
+      },
+      {
+        "name": "The Dense Label Rule",
+        "body": "Labels may be small only when they are heavy, tracked, and placed in consistent rows. Tiny weak labels are forbidden.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Hero Type Rule",
+        "body": "This product UI does not use landing-page scale typography inside the studio. Large expressive type belongs to a later brand pass.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tonal Depth Rule",
+        "body": "Prefer darker or lighter surface steps, 1px borders, and selected fills before reaching for a shadow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Glow Is State Rule",
+        "body": "Glow must communicate active, selected, live, or focused state. Decorative glow is prohibited.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep the studio a product tool first: fast to understand, dense enough for real control, and calm enough for repeated use.",
+      "Do make first-run setup obvious before exposing every deep customization path.",
+      "Do use Signal Ember or Control Cobalt for active state, command, focus, and status.",
+      "Do preserve numeric precision beside sliders.",
+      "Do keep the live preview visible, resizable, and visually quieter than the overlay itself.",
+      "Do keep animation short, responsive, and tied to state changes.",
+      "Do keep keyboard focus visible on every interactive control."
+    ],
+    "donts": [
+      "Don't make this look like a generic SaaS dashboard.",
+      "Don't make this feel like a sterile admin panel.",
+      "Don't imitate outdated OBS plugin interfaces.",
+      "Don't lean into overly cute holiday toy styling.",
+      "Don't add cluttered novelty controls.",
+      "Don't use visual treatments that make the UI look heavier than the overlay it controls.",
+      "Don't sacrifice clarity, performance, or control density for personality.",
+      "Don't make advanced users dig through decorative surfaces to reach real settings.",
+      "Don't use colored side-stripe borders greater than 1px as card accents.",
+      "Don't use gradient text, decorative glassmorphism, or repeated identical card grids."
+    ]
+  }
+}

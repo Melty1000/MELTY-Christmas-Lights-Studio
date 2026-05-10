@@ -1,7 +1,12 @@
+import { Vector3 } from 'three';
+
 export interface BillboardInstanceOffset {
   y: number;
   z: number;
 }
+
+export const ORTHO_CAMERA_FORWARD = new Vector3(0, 4.8, -15).normalize();
+export const ORTHO_CAMERA_DEPTH_DIRECTION = ORTHO_CAMERA_FORWARD.clone().multiplyScalar(-1);
 
 export const BILLBOARD_OFFSETS = {
   filament: { y: -2.2, z: 0.04 } satisfies BillboardInstanceOffset,
@@ -11,9 +16,9 @@ export const BILLBOARD_OFFSETS = {
 
 export const SOCKET_SHAPE_TOP_Y = 1.15;
 export const SEPARATION_COMPENSATION_SCALE = 0.9;
+export const GLASS_SOCKET_OCCLUSION_Y = -0.3;
 
-const SOCKET_WIRE_JOIN_OVERLAP_Y = 0.03;
-const MIN_SOCKET_JOIN_Z_BACK = 0.08;
+const SOCKET_WIRE_JOIN_OVERLAP_Y = 0.14;
 
 export function socketWireJoinDepth(
   bulbScale: number,
@@ -28,6 +33,12 @@ export function socketWireJoinDepth(
   return socketLipDepth + separationCompensation * SEPARATION_COMPENSATION_SCALE;
 }
 
-export function socketJoinZBackLimit(bulbScale: number): number {
-  return Math.max(MIN_SOCKET_JOIN_Z_BACK, socketWireJoinDepth(bulbScale, 0));
+export function billboardDepthBoost(wireThickness: number, cameraDistance: number): number {
+  const inv = 0.03 / (wireThickness + 0.0055);
+  const distScale = 1.0 + 0.07 * Math.max(0, cameraDistance - 8);
+
+  return Math.min(
+    0.4,
+    (0.02 + 0.2 * Math.min(2.2, inv) + 0.08 * Math.min(1, inv * inv * 0.04)) * distScale,
+  );
 }

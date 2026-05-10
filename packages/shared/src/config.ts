@@ -25,32 +25,13 @@ export const WIRE_THEME_NAMES = [
 
 export const SOCKET_THEME_NAMES = ['WIRE_MATCH', 'GOLD', 'SILVER', 'COPPER'] as const;
 
-export const LIGHT_LAYOUT_NAMES = [
-  'TOP',
-  'BOTTOM',
-  'RIGHT',
-  'LEFT',
-  'TOP_RIGHT',
-  'TOP_LEFT',
-  'TOP_BOTTOM',
-  'BOTTOM_RIGHT',
-  'BOTTOM_LEFT',
-  'LEFT_RIGHT',
-  'LEFT_TOP_RIGHT',
-  'TOP_RIGHT_BOTTOM',
-  'RIGHT_BOTTOM_LEFT',
-  'BOTTOM_LEFT_TOP',
-  'ALL_SIDES',
-  'DRAPES',
-  'DUAL_DRAPES',
-  'CIRCLE',
-  'TRIANGLE',
-  'SQUARE',
-  'PENTAGON',
-  'HEXAGON',
-  'HEPTAGON',
-  'OCTAGON',
-] as const;
+export const LAYOUT_MODE_NAMES = ['EDGES', 'SHAPE'] as const;
+
+export const LAYOUT_EDGE_NAMES = ['TOP', 'RIGHT', 'BOTTOM', 'LEFT'] as const;
+
+export const BULB_ORIENTATION_MODE_NAMES = ['LAYOUT', 'NATURAL'] as const;
+
+export const WIRE_TUNING_MODE_NAMES = ['SIMPLE', 'ADVANCED'] as const;
 
 export const WIRE_CONTROL_LIMITS = {
   THICKNESS_MIN: 0.01,
@@ -71,6 +52,46 @@ export const WIRE_CONTROL_LIMITS = {
   THIN_WIRE_SEPARATION_MAX_HIGH_TWIST: 0.036,
 } as const;
 
+const WIRE_CONTROL_PERCENT_MIN = 0;
+const WIRE_CONTROL_PERCENT_MAX = 100;
+
+export const WIRE_SIMPLE_WEIGHT_MAX = 50;
+export const WIRE_SIMPLE_WEIGHT_CONTROL_MAX = WIRE_CONTROL_PERCENT_MAX;
+export const BULB_SCALE_CONTROL_MIN = WIRE_CONTROL_PERCENT_MIN;
+export const BULB_SCALE_CONTROL_MAX = WIRE_CONTROL_PERCENT_MAX;
+export const AMBIENT_INTENSITY_CONTROL_MIN = WIRE_CONTROL_PERCENT_MIN;
+export const AMBIENT_INTENSITY_CONTROL_MAX = WIRE_CONTROL_PERCENT_MAX;
+export const REFLECTION_INTENSITY_CONTROL_MIN = WIRE_CONTROL_PERCENT_MIN;
+export const REFLECTION_INTENSITY_CONTROL_MAX = WIRE_CONTROL_PERCENT_MAX;
+export const GLASS_OPACITY_CONTROL_MIN = WIRE_CONTROL_PERCENT_MIN;
+export const GLASS_OPACITY_CONTROL_MAX = WIRE_CONTROL_PERCENT_MAX;
+
+export const DEFAULT_WIRE_GEOMETRY = {
+  WIRE_THICKNESS: 0.031,
+  WIRE_SEPARATION: 0.036,
+  WIRE_TWISTS: 200,
+} as const;
+
+export const BULB_SCALE_LIMITS = {
+  MIN: 0.1,
+  MAX: 0.5,
+} as const;
+
+export const AMBIENT_INTENSITY_LIMITS = {
+  MIN: 0,
+  MAX: 1,
+} as const;
+
+export const REFLECTION_INTENSITY_LIMITS = {
+  MIN: 0,
+  MAX: 2.4,
+} as const;
+
+export const GLASS_OPACITY_LIMITS = {
+  MIN: 0.02,
+  MAX: 0.9,
+} as const;
+
 const WIRE_CONTROL_ENDPOINT_EPSILON = 0.0011;
 const WIRE_SIMPLE_SPACING_RATIO = 0.03;
 
@@ -80,7 +101,12 @@ export const configSchema = z.object({
   STARS_ENABLED: z.boolean().default(false),
   SNOW_ENABLED: z.boolean().default(false),
   BACKGROUND_ENABLED: z.boolean().default(false),
-  POINT_LIGHTS_ENABLED: z.boolean().default(false),
+  REFLECTION_INTENSITY: z.preprocess(
+    (v) => (typeof v === 'number'
+      ? Math.min(REFLECTION_INTENSITY_LIMITS.MAX, Math.max(REFLECTION_INTENSITY_LIMITS.MIN, v))
+      : v),
+    z.number().min(REFLECTION_INTENSITY_LIMITS.MIN).max(REFLECTION_INTENSITY_LIMITS.MAX),
+  ).default(1),
   ANTIALIAS_ENABLED: z.boolean().default(true),
   STATS_ENABLED: z.boolean().default(false),
 
@@ -88,62 +114,96 @@ export const configSchema = z.object({
   WIRE_THEME: z.enum(WIRE_THEME_NAMES).default('SILVER'),
   SOCKET_THEME: z.enum(SOCKET_THEME_NAMES).default('WIRE_MATCH'),
 
-  LIGHT_LAYOUT: z.enum(LIGHT_LAYOUT_NAMES).default('TOP'),
-  LAYOUT_MARGIN: z.number().min(0).max(0.35).default(0),
-  LAYOUT_SCALE: z.number().min(0.2).max(1.5).default(1),
-  LAYOUT_OFFSET_X: z.number().min(-1).max(1).default(0),
-  LAYOUT_OFFSET_Y: z.number().min(-1).max(1).default(0),
+  LAYOUT_MODE: z.preprocess(
+    (v) => (v === 'SHAPE' ? 'SHAPE' : 'EDGES'),
+    z.enum(LAYOUT_MODE_NAMES),
+  ).default('EDGES'),
+  LAYOUT_EDGES: z.array(z.enum(LAYOUT_EDGE_NAMES)).min(1).default(['TOP']),
+  LAYOUT_SHAPE_SIDES: z.preprocess(
+    (v) => (typeof v === 'number' ? Math.round(Math.min(10, Math.max(3, v))) : v),
+    z.number().int().min(3).max(10),
+  ).default(4),
+  LAYOUT_CORNER_ROUNDNESS: z.preprocess(
+    (v) => {
+      if (typeof v !== 'number') return v;
+      const clamped = Math.min(1, Math.max(0, v));
+      return Number((Math.round(clamped * 100) / 100).toFixed(2));
+    },
+    z.number().min(0).max(1),
+  ).default(0),
+  EDGE_INSET: z.number().min(0).max(0.35).default(0),
+  EDGE_COVERAGE: z.number().min(0.2).max(1.5).default(1),
+  SHAPE_PADDING: z.number().min(0).max(0.35).default(0),
+  LAYOUT_POSITION_X: z.number().min(-1).max(1).default(0),
+  LAYOUT_POSITION_Y: z.number().min(-1).max(1).default(0),
 
+  BULB_ORIENTATION_MODE: z.enum(BULB_ORIENTATION_MODE_NAMES).default('LAYOUT'),
   NUM_PINS: z.number().int().min(2).max(20).default(7),
   SAG_AMPLITUDE: z.number().min(0).max(2).default(0.4),
   LIGHTS_PER_SEGMENT: z.number().int().min(1).max(100).default(3),
 
-  // Clamped to 1 max. Old saves with values >1 are coerced on load so
+  // Clamped to 0.5 max. Old saves with values >0.5 are coerced on load so
   // `config.json` does not fail validation.
   BULB_SCALE: z.preprocess(
-    (v) => (typeof v === 'number' ? Math.min(1, Math.max(0.1, v)) : v),
-    z.number().min(0.1).max(1),
+    (v) => (typeof v === 'number'
+      ? Math.min(BULB_SCALE_LIMITS.MAX, Math.max(BULB_SCALE_LIMITS.MIN, v))
+      : v),
+    z.number().min(BULB_SCALE_LIMITS.MIN).max(BULB_SCALE_LIMITS.MAX),
   ).default(0.23),
-  WIRE_THICKNESS: z.preprocess(
+  WIRE_TUNING_MODE: z.enum(WIRE_TUNING_MODE_NAMES).default('SIMPLE'),
+  WIRE_WEIGHT: z.preprocess(
+    (v) => (typeof v === 'number' ? Math.round(Math.min(WIRE_SIMPLE_WEIGHT_MAX, Math.max(0, v))) : v),
+    z.number().int().min(0).max(WIRE_SIMPLE_WEIGHT_MAX),
+  ).default(11),
+  TWIST_DENSITY: z.preprocess(
+    (v) => (typeof v === 'number' ? Math.round(Math.min(100, Math.max(0, v))) : v),
+    z.number().int().min(0).max(100),
+  ).default(100),
+  ADVANCED_WIRE_THICKNESS: z.preprocess(
     (v) => (typeof v === 'number'
       ? Math.min(WIRE_CONTROL_LIMITS.THICKNESS_MAX, Math.max(WIRE_CONTROL_LIMITS.THICKNESS_MIN, v))
       : v),
     z.number().min(WIRE_CONTROL_LIMITS.THICKNESS_MIN).max(WIRE_CONTROL_LIMITS.THICKNESS_MAX),
-  ).default(0.031),
-  WIRE_SEPARATION: z.number().min(WIRE_CONTROL_LIMITS.SEPARATION_MIN).max(WIRE_CONTROL_LIMITS.SEPARATION_MAX).default(0.036),
-  WIRE_TWISTS: z.preprocess(
+  ).default(DEFAULT_WIRE_GEOMETRY.WIRE_THICKNESS),
+  ADVANCED_WIRE_SEPARATION: z.number().min(WIRE_CONTROL_LIMITS.SEPARATION_MIN).max(WIRE_CONTROL_LIMITS.SEPARATION_MAX).default(DEFAULT_WIRE_GEOMETRY.WIRE_SEPARATION),
+  ADVANCED_WIRE_TWISTS: z.preprocess(
     (v) => (typeof v === 'number'
       ? Math.round(Math.min(WIRE_CONTROL_LIMITS.TWISTS_MAX, Math.max(WIRE_CONTROL_LIMITS.TWISTS_MIN, v)))
       : v),
     z.number().int().min(WIRE_CONTROL_LIMITS.TWISTS_MIN).max(WIRE_CONTROL_LIMITS.TWISTS_MAX),
-  ).default(200),
+  ).default(DEFAULT_WIRE_GEOMETRY.WIRE_TWISTS),
+  WIRE_COLOR_OVERRIDE_ENABLED: z.boolean().default(false),
+  WIRE_A_COLOR: z.number().int().min(0).max(0xffffff).default(0xff7a00),
+  WIRE_B_COLOR: z.number().int().min(0).max(0xffffff).default(0x39ff14),
+  WIRE_A_LEAD_COLOR: z.number().int().min(0).max(0xffffff).default(0x00e5ff),
+  WIRE_B_LEAD_COLOR: z.number().int().min(0).max(0xffffff).default(0xffff00),
 
   AMBIENT_INTENSITY: z.preprocess(
-    (v) => (typeof v === 'number' ? Math.min(5, Math.max(0.15, v)) : v),
-    z.number().min(0.15).max(5),
+    (v) => (typeof v === 'number'
+      ? Math.min(AMBIENT_INTENSITY_LIMITS.MAX, Math.max(AMBIENT_INTENSITY_LIMITS.MIN, v))
+      : v),
+    z.number().min(AMBIENT_INTENSITY_LIMITS.MIN).max(AMBIENT_INTENSITY_LIMITS.MAX),
   ).default(1),
-  KEY_LIGHT_INTENSITY: z.number().min(0).max(5).default(1.2),
-  FILL_LIGHT_INTENSITY: z.number().min(0).max(5).default(0.42),
-  HEMI_LIGHT_INTENSITY: z.number().min(0).max(5).default(0.35),
 
-  POSTFX_ENABLED: z.boolean().default(true),
-  BLOOM_STRENGTH: z.number().min(0).max(5).default(0.65),
-  BLOOM_RADIUS: z.preprocess(
-    (v) => (typeof v === 'number' ? Math.min(1, Math.max(0, v)) : v),
-    z.number().min(0).max(1),
+  HALO_STRENGTH: z.number().min(0).max(5).default(0.65),
+  HALO_RADIUS: z.preprocess(
+    (v) => (typeof v === 'number' ? Math.min(0.3, Math.max(0, v)) : v),
+    z.number().min(0).max(0.3),
   ).default(0.1),
-  BLOOM_THRESHOLD: z.number().min(0).max(1).default(0.12),
-  BLOOM_INTENSITY: z.number().min(0).max(5).default(0.85),
+  HALO_INTENSITY: z.number().min(0).max(5).default(0.85),
+  HALO_SOURCE_INTENSITY: z.number().min(0).max(20).default(8),
 
   // Cap <1 so the bulb dome never fully occludes; old saves with 1.0 coerce.
   GLASS_OPACITY: z.preprocess(
-    (v) => (typeof v === 'number' ? Math.min(0.9, v) : v),
-    z.number().min(0).max(0.9),
+    (v) => (typeof v === 'number'
+      ? Math.min(GLASS_OPACITY_LIMITS.MAX, Math.max(GLASS_OPACITY_LIMITS.MIN, v))
+      : v),
+    z.number().min(GLASS_OPACITY_LIMITS.MIN).max(GLASS_OPACITY_LIMITS.MAX),
   ).default(0.15),
   // Maps to the custom dome shader’s specular width, not Three’s PBR
   // roughness (see BillboardBulbs glass material).
   GLASS_ROUGHNESS: z.number().min(0).max(1).default(0),
-  EMISSIVE_INTENSITY: z.number().min(0).max(20).default(6),
+  BULB_INTERNAL_GLOW: z.number().min(0).max(800).default(6),
 
   ANIMATION_SPEED: z.number().min(0).max(5).default(0),
   SWAY_X: z.number().min(0).max(2).default(0),
@@ -169,13 +229,14 @@ export const configSchema = z.object({
   // the camera "height" in world; semantics are now target-relative.
   CAMERA_HEIGHT: z.number().min(-50).max(50).default(0),
   CAMERA_X: z.number().min(-50).max(50).default(0),
-
-  TENSION: z.number().min(-1).max(1).default(0),
 });
 
 export type Config = z.infer<typeof configSchema>;
 export type ConfigKey = keyof Config;
-export type LightLayoutName = (typeof LIGHT_LAYOUT_NAMES)[number];
+export type LayoutModeName = (typeof LAYOUT_MODE_NAMES)[number];
+export type LayoutEdgeName = (typeof LAYOUT_EDGE_NAMES)[number];
+export type BulbOrientationModeName = (typeof BULB_ORIENTATION_MODE_NAMES)[number];
+export type WireTuningModeName = (typeof WIRE_TUNING_MODE_NAMES)[number];
 
 export const configPatchSchema = configSchema.partial();
 export type ConfigPatch = z.infer<typeof configPatchSchema>;
@@ -183,17 +244,29 @@ export type ConfigPatch = z.infer<typeof configPatchSchema>;
 export const DEFAULT_CONFIG: Config = configSchema.parse({});
 
 const AUTO_CAMERA_KEYS = ['CAMERA_DISTANCE', 'CAMERA_HEIGHT', 'CAMERA_X'] as const;
+const LAYOUT_CAMERA_RESET_KEYS = [
+  'LAYOUT_MODE',
+  'LAYOUT_EDGES',
+  'LAYOUT_SHAPE_SIDES',
+  'LAYOUT_CORNER_ROUNDNESS',
+] as const;
 const WIRE_KEYS = ['WIRE_THICKNESS', 'WIRE_SEPARATION', 'WIRE_TWISTS'] as const;
+const WIRE_CONFIG_KEYS = [
+  'WIRE_TUNING_MODE',
+  'WIRE_WEIGHT',
+  'TWIST_DENSITY',
+  'ADVANCED_WIRE_THICKNESS',
+  'ADVANCED_WIRE_SEPARATION',
+  'ADVANCED_WIRE_TWISTS',
+] as const;
 
 type WireKey = (typeof WIRE_KEYS)[number];
-type WireValues = Pick<Config, WireKey>;
+export type WireValues = Record<WireKey, number>;
+type WireConfigKey = (typeof WIRE_CONFIG_KEYS)[number];
 export interface SimpleWireControls {
   weight: number;
   density: number;
 }
-
-const WIRE_CONTROL_PERCENT_MIN = 0;
-const WIRE_CONTROL_PERCENT_MAX = 100;
 
 export interface WireControlBounds {
   thickness: { min: number; max: number };
@@ -201,16 +274,44 @@ export interface WireControlBounds {
   twists: { min: number; max: number };
 }
 
+export function normalizeLayoutEdges(edges: readonly LayoutEdgeName[] | undefined): LayoutEdgeName[] {
+  if (!edges || edges.length === 0) return ['TOP'];
+  const selected = new Set(edges);
+  const normalized = LAYOUT_EDGE_NAMES.filter((edge) => selected.has(edge));
+  return normalized.length > 0 ? [...normalized] : ['TOP'];
+}
+
+export function applyLayoutGuardrails(config: Config): Config {
+  return {
+    ...config,
+    LAYOUT_EDGES: normalizeLayoutEdges(config.LAYOUT_EDGES),
+  };
+}
+
 export function withLayoutCameraDefaults(
   patch: ConfigPatch,
-  current?: Pick<Config, 'LIGHT_LAYOUT'>,
+  current?: Pick<Config, (typeof LAYOUT_CAMERA_RESET_KEYS)[number]>,
 ): ConfigPatch {
-  if (patch.LIGHT_LAYOUT === undefined) return patch;
-  if (current && patch.LIGHT_LAYOUT === current.LIGHT_LAYOUT) return patch;
-  if (AUTO_CAMERA_KEYS.some((key) => patch[key] !== undefined)) return patch;
+  const normalizedPatch: ConfigPatch = patch.LAYOUT_EDGES === undefined
+    ? patch
+    : { ...patch, LAYOUT_EDGES: normalizeLayoutEdges(patch.LAYOUT_EDGES) };
+  const layoutChanged = LAYOUT_CAMERA_RESET_KEYS.some((key) => {
+    const next = normalizedPatch[key];
+    if (next === undefined) return false;
+    if (!current) return true;
+    const prev = current[key];
+    if (Array.isArray(next) && Array.isArray(prev)) {
+      if (next.length !== prev.length) return true;
+      return next.some((value, index) => value !== prev[index]);
+    }
+    return next !== prev;
+  });
+
+  if (!layoutChanged) return normalizedPatch;
+  if (AUTO_CAMERA_KEYS.some((key) => normalizedPatch[key] !== undefined)) return normalizedPatch;
 
   return {
-    ...patch,
+    ...normalizedPatch,
     CAMERA_DISTANCE: DEFAULT_CONFIG.CAMERA_DISTANCE,
     CAMERA_HEIGHT: DEFAULT_CONFIG.CAMERA_HEIGHT,
     CAMERA_X: DEFAULT_CONFIG.CAMERA_X,
@@ -222,7 +323,7 @@ export function maxThicknessAtZeroSeparation(twists: number): number {
     Math.round(twists),
     WIRE_CONTROL_LIMITS.TWISTS_MIN,
     WIRE_CONTROL_LIMITS.TWISTS_MAX,
-    DEFAULT_CONFIG.WIRE_TWISTS,
+    DEFAULT_WIRE_GEOMETRY.WIRE_TWISTS,
   );
   if (safeTwists <= 0) return WIRE_CONTROL_LIMITS.THICKNESS_MAX;
 
@@ -240,7 +341,7 @@ export function maxSafeWireThickness(separation: number, twists: number): number
     separation,
     WIRE_CONTROL_LIMITS.SEPARATION_MIN,
     WIRE_CONTROL_LIMITS.SEPARATION_MAX,
-    DEFAULT_CONFIG.WIRE_SEPARATION,
+    DEFAULT_WIRE_GEOMETRY.WIRE_SEPARATION,
   );
   const zeroSeparationMax = maxThicknessAtZeroSeparation(twists);
   if (safeSeparation <= 0) return zeroSeparationMax;
@@ -249,7 +350,7 @@ export function maxSafeWireThickness(separation: number, twists: number): number
     twists,
     WIRE_CONTROL_LIMITS.TWISTS_MIN,
     WIRE_CONTROL_LIMITS.TWISTS_MAX,
-    DEFAULT_CONFIG.WIRE_TWISTS,
+    DEFAULT_WIRE_GEOMETRY.WIRE_TWISTS,
   ));
   for (
     let thickness = WIRE_CONTROL_LIMITS.THICKNESS_MAX;
@@ -271,14 +372,14 @@ export function minSafeWireSeparation(thickness: number, twists: number): number
     thickness,
     WIRE_CONTROL_LIMITS.THICKNESS_MIN,
     WIRE_CONTROL_LIMITS.THICKNESS_MAX,
-    DEFAULT_CONFIG.WIRE_THICKNESS,
+    DEFAULT_WIRE_GEOMETRY.WIRE_THICKNESS,
   );
   if (safeThickness <= WIRE_CONTROL_LIMITS.THICKNESS_MIN) return WIRE_CONTROL_LIMITS.SEPARATION_MIN;
   const safeTwists = clampFinite(
     Math.round(twists),
     WIRE_CONTROL_LIMITS.TWISTS_MIN,
     WIRE_CONTROL_LIMITS.TWISTS_MAX,
-    DEFAULT_CONFIG.WIRE_TWISTS,
+    DEFAULT_WIRE_GEOMETRY.WIRE_TWISTS,
   );
   const bounds = wireSeparationBoundsFor(safeThickness, safeTwists);
 
@@ -302,13 +403,13 @@ export function maxSafeWireTwists(thickness: number, separation: number): number
     thickness,
     WIRE_CONTROL_LIMITS.THICKNESS_MIN,
     WIRE_CONTROL_LIMITS.THICKNESS_MAX,
-    DEFAULT_CONFIG.WIRE_THICKNESS,
+    DEFAULT_WIRE_GEOMETRY.WIRE_THICKNESS,
   );
   const safeSeparation = clampFinite(
     separation,
     WIRE_CONTROL_LIMITS.SEPARATION_MIN,
     WIRE_CONTROL_LIMITS.SEPARATION_MAX,
-    DEFAULT_CONFIG.WIRE_SEPARATION,
+    DEFAULT_WIRE_GEOMETRY.WIRE_SEPARATION,
   );
 
   return Math.floor(clampFinite(
@@ -337,32 +438,59 @@ export function getWireControlBounds(_values: WireValues): WireControlBounds {
 }
 
 export function applyWireGuardrails(config: Config): Config {
+  if (config.WIRE_TUNING_MODE === 'ADVANCED') {
+    const normalized = normalizeWireForSafeConfig({
+      WIRE_THICKNESS: config.ADVANCED_WIRE_THICKNESS,
+      WIRE_SEPARATION: config.ADVANCED_WIRE_SEPARATION,
+      WIRE_TWISTS: config.ADVANCED_WIRE_TWISTS,
+    });
+    return {
+      ...config,
+      ADVANCED_WIRE_THICKNESS: normalized.WIRE_THICKNESS,
+      ADVANCED_WIRE_SEPARATION: normalized.WIRE_SEPARATION,
+      ADVANCED_WIRE_TWISTS: normalized.WIRE_TWISTS,
+    };
+  }
+
   return {
     ...config,
-    ...normalizeWireForSafeConfig(config),
+    WIRE_WEIGHT: clampFinite(config.WIRE_WEIGHT, 0, WIRE_SIMPLE_WEIGHT_MAX, 11),
+    TWIST_DENSITY: Math.round(clampFinite(config.TWIST_DENSITY, 0, 100, 100)),
   };
 }
 
 export function withWireGuardrails(
   patch: ConfigPatch,
-  current?: WireValues,
+  current?: Config,
 ): ConfigPatch {
-  const patchedWireKeys = WIRE_KEYS.filter((key) => patch[key] !== undefined);
+  const patchedWireKeys = WIRE_CONFIG_KEYS.filter((key) => patch[key] !== undefined);
   if (patchedWireKeys.length === 0) return patch;
 
-  const base = normalizeWireAbsolutes(current ?? DEFAULT_CONFIG);
-  const normalized = normalizeWireForSafeConfig({
-    WIRE_THICKNESS: patch.WIRE_THICKNESS ?? base.WIRE_THICKNESS,
-    WIRE_SEPARATION: patch.WIRE_SEPARATION ?? base.WIRE_SEPARATION,
-    WIRE_TWISTS: patch.WIRE_TWISTS ?? base.WIRE_TWISTS,
-  });
+  const base = applyWireGuardrails(current ?? DEFAULT_CONFIG);
+  const normalized = applyWireGuardrails({ ...base, ...patch });
   const out: ConfigPatch = { ...patch };
-  for (const key of WIRE_KEYS) {
+  const outRecord = out as Record<string, unknown>;
+  for (const key of WIRE_CONFIG_KEYS) {
     if (patchedWireKeys.includes(key) || normalized[key] !== base[key]) {
-      out[key] = normalized[key];
+      outRecord[key] = normalized[key];
     }
   }
   return out;
+}
+
+export function resolveWireGeometry(config: Config): WireValues {
+  if (config.WIRE_TUNING_MODE === 'ADVANCED') {
+    return normalizeWireForSafeConfig({
+      WIRE_THICKNESS: config.ADVANCED_WIRE_THICKNESS,
+      WIRE_SEPARATION: config.ADVANCED_WIRE_SEPARATION,
+      WIRE_TWISTS: config.ADVANCED_WIRE_TWISTS,
+    });
+  }
+
+  return deriveWireFromSimpleControls({
+    weight: config.WIRE_WEIGHT,
+    density: config.TWIST_DENSITY,
+  });
 }
 
 export function normalizeWireForSafeConfig(values: Partial<WireValues>): WireValues {
@@ -409,7 +537,7 @@ export function wireThicknessToControlValue(thickness: number): number {
       thickness,
       WIRE_CONTROL_LIMITS.THICKNESS_MIN,
       WIRE_CONTROL_LIMITS.THICKNESS_MAX,
-      DEFAULT_CONFIG.WIRE_THICKNESS,
+      DEFAULT_WIRE_GEOMETRY.WIRE_THICKNESS,
     ) - WIRE_CONTROL_LIMITS.THICKNESS_MIN)
     / (WIRE_CONTROL_LIMITS.THICKNESS_MAX - WIRE_CONTROL_LIMITS.THICKNESS_MIN)
   ) * WIRE_CONTROL_PERCENT_MAX;
@@ -424,12 +552,134 @@ export function wireThicknessFromControlValue(value: number): number {
   ).toFixed(3));
 }
 
+export function wireWeightToControlValue(weight: number): number {
+  const safeWeight = clampFinite(weight, 0, WIRE_SIMPLE_WEIGHT_MAX, 0);
+  return Math.round((safeWeight / WIRE_SIMPLE_WEIGHT_MAX) * WIRE_SIMPLE_WEIGHT_CONTROL_MAX);
+}
+
+export function wireWeightFromControlValue(value: number): number {
+  return Math.round(
+    (clampWireControl(value) / WIRE_SIMPLE_WEIGHT_CONTROL_MAX)
+      * WIRE_SIMPLE_WEIGHT_MAX,
+  );
+}
+
 export function wireWeightToRawThickness(weight: number): number {
-  return wireThicknessFromControlValue(weight);
+  return wireThicknessFromControlValue(Math.min(WIRE_SIMPLE_WEIGHT_MAX, weight));
 }
 
 export function rawThicknessToWireWeight(thickness: number): number {
   return wireThicknessToControlValue(thickness);
+}
+
+export function bulbScaleToControlValue(scale: number): number {
+  const normalized = (
+    (clampFinite(
+      scale,
+      BULB_SCALE_LIMITS.MIN,
+      BULB_SCALE_LIMITS.MAX,
+      DEFAULT_CONFIG.BULB_SCALE,
+    ) - BULB_SCALE_LIMITS.MIN)
+    / (BULB_SCALE_LIMITS.MAX - BULB_SCALE_LIMITS.MIN)
+  ) * BULB_SCALE_CONTROL_MAX;
+  return roundWireControl(normalized);
+}
+
+export function bulbScaleFromControlValue(value: number): number {
+  const percent = clampFinite(
+    value,
+    BULB_SCALE_CONTROL_MIN,
+    BULB_SCALE_CONTROL_MAX,
+    BULB_SCALE_CONTROL_MIN,
+  ) / BULB_SCALE_CONTROL_MAX;
+
+  return Number((
+    BULB_SCALE_LIMITS.MIN
+    + percent * (BULB_SCALE_LIMITS.MAX - BULB_SCALE_LIMITS.MIN)
+  ).toFixed(3));
+}
+
+export function glassOpacityToControlValue(opacity: number): number {
+  const normalized = (
+    (clampFinite(
+      opacity,
+      GLASS_OPACITY_LIMITS.MIN,
+      GLASS_OPACITY_LIMITS.MAX,
+      DEFAULT_CONFIG.GLASS_OPACITY,
+    ) - GLASS_OPACITY_LIMITS.MIN)
+    / (GLASS_OPACITY_LIMITS.MAX - GLASS_OPACITY_LIMITS.MIN)
+  ) * GLASS_OPACITY_CONTROL_MAX;
+  return roundWireControl(normalized);
+}
+
+export function glassOpacityFromControlValue(value: number): number {
+  const percent = clampFinite(
+    value,
+    GLASS_OPACITY_CONTROL_MIN,
+    GLASS_OPACITY_CONTROL_MAX,
+    GLASS_OPACITY_CONTROL_MIN,
+  ) / GLASS_OPACITY_CONTROL_MAX;
+
+  return Number((
+    GLASS_OPACITY_LIMITS.MIN
+    + percent * (GLASS_OPACITY_LIMITS.MAX - GLASS_OPACITY_LIMITS.MIN)
+  ).toFixed(3));
+}
+
+export function ambientIntensityToControlValue(intensity: number): number {
+  const normalized = (
+    (clampFinite(
+      intensity,
+      AMBIENT_INTENSITY_LIMITS.MIN,
+      AMBIENT_INTENSITY_LIMITS.MAX,
+      DEFAULT_CONFIG.AMBIENT_INTENSITY,
+    ) - AMBIENT_INTENSITY_LIMITS.MIN)
+    / (AMBIENT_INTENSITY_LIMITS.MAX - AMBIENT_INTENSITY_LIMITS.MIN)
+  ) * AMBIENT_INTENSITY_CONTROL_MAX;
+
+  return roundWireControl(normalized);
+}
+
+export function ambientIntensityFromControlValue(value: number): number {
+  const percent = clampFinite(
+    value,
+    AMBIENT_INTENSITY_CONTROL_MIN,
+    AMBIENT_INTENSITY_CONTROL_MAX,
+    AMBIENT_INTENSITY_CONTROL_MIN,
+  ) / AMBIENT_INTENSITY_CONTROL_MAX;
+
+  return Number((
+    AMBIENT_INTENSITY_LIMITS.MIN
+    + percent * (AMBIENT_INTENSITY_LIMITS.MAX - AMBIENT_INTENSITY_LIMITS.MIN)
+  ).toFixed(2));
+}
+
+export function reflectionIntensityToControlValue(intensity: number): number {
+  const normalized = (
+    (clampFinite(
+      intensity,
+      REFLECTION_INTENSITY_LIMITS.MIN,
+      REFLECTION_INTENSITY_LIMITS.MAX,
+      DEFAULT_CONFIG.REFLECTION_INTENSITY,
+    ) - REFLECTION_INTENSITY_LIMITS.MIN)
+    / (REFLECTION_INTENSITY_LIMITS.MAX - REFLECTION_INTENSITY_LIMITS.MIN)
+  ) * REFLECTION_INTENSITY_CONTROL_MAX;
+
+  return roundWireControl(normalized);
+}
+
+export function reflectionIntensityFromControlValue(value: number): number {
+  const percent = clampFinite(
+    value,
+    REFLECTION_INTENSITY_CONTROL_MIN,
+    REFLECTION_INTENSITY_CONTROL_MAX,
+    REFLECTION_INTENSITY_CONTROL_MIN,
+  ) / REFLECTION_INTENSITY_CONTROL_MAX;
+
+  return Number((
+    REFLECTION_INTENSITY_LIMITS.MIN
+    + percent * (REFLECTION_INTENSITY_LIMITS.MAX - REFLECTION_INTENSITY_LIMITS.MIN)
+  ).toFixed(2));
 }
 
 export function wireSeparationToControlValue(
@@ -467,24 +717,52 @@ export function wireTwistIntentFromControlValue(value: number): number {
   );
 }
 
-export function wireDensityToRawIntent(density: number): number {
-  return wireTwistIntentFromControlValue(density);
+export function wireDensityToRawIntent(
+  density: number,
+  weight = WIRE_SIMPLE_WEIGHT_MAX,
+): number {
+  const maxTwists = maxSimpleWireTwistsForWeight(weight);
+  return Math.round((clampWireControl(density) / WIRE_CONTROL_PERCENT_MAX) * maxTwists);
 }
 
 export function deriveWireFromSimpleControls(controls: SimpleWireControls): WireValues {
   const thickness = wireWeightToRawThickness(controls.weight);
-  const twistIntent = wireDensityToRawIntent(controls.density);
-  const separationBounds = wireSeparationBoundsFor(thickness, twistIntent);
-  const separation = Number((
-    separationBounds.min
-    + WIRE_SIMPLE_SPACING_RATIO * (separationBounds.max - separationBounds.min)
-  ).toFixed(3));
+  const twistIntent = wireDensityToRawIntent(controls.density, controls.weight);
+  const separation = simpleWireSeparationFor(thickness, twistIntent);
 
   return normalizeWireForSafeConfig({
     WIRE_THICKNESS: thickness,
     WIRE_SEPARATION: separation,
     WIRE_TWISTS: twistIntent,
   });
+}
+
+export function maxSimpleWireTwistsForWeight(weight: number): number {
+  const thickness = wireWeightToRawThickness(weight);
+  let maxTwists: number = WIRE_CONTROL_LIMITS.TWISTS_MIN;
+
+  for (
+    let twists = WIRE_CONTROL_LIMITS.TWISTS_MIN;
+    twists <= WIRE_CONTROL_LIMITS.TWISTS_MAX;
+    twists += 1
+  ) {
+    const normalized = normalizeWireForSafeConfig({
+      WIRE_THICKNESS: thickness,
+      WIRE_SEPARATION: simpleWireSeparationFor(thickness, twists),
+      WIRE_TWISTS: twists,
+    });
+    maxTwists = Math.max(maxTwists, normalized.WIRE_TWISTS);
+  }
+
+  return maxTwists;
+}
+
+function simpleWireSeparationFor(thickness: number, twists: number): number {
+  const separationBounds = wireSeparationBoundsFor(thickness, twists);
+  return Number((
+    separationBounds.min
+    + WIRE_SIMPLE_SPACING_RATIO * (separationBounds.max - separationBounds.min)
+  ).toFixed(3));
 }
 
 export function wireTwistsToControlValue(
@@ -539,13 +817,13 @@ function wireSeparationBoundsFor(thickness: number, twists: number): { min: numb
     thickness,
     WIRE_CONTROL_LIMITS.THICKNESS_MIN,
     WIRE_CONTROL_LIMITS.THICKNESS_MAX,
-    DEFAULT_CONFIG.WIRE_THICKNESS,
+    DEFAULT_WIRE_GEOMETRY.WIRE_THICKNESS,
   );
   const twistRatio = clampFinite(
     twists,
     WIRE_CONTROL_LIMITS.TWISTS_MIN,
     WIRE_CONTROL_LIMITS.TWISTS_MAX,
-    DEFAULT_CONFIG.WIRE_TWISTS,
+    DEFAULT_WIRE_GEOMETRY.WIRE_TWISTS,
   ) / WIRE_CONTROL_LIMITS.TWISTS_MAX;
   const thinWeight = thinWireSeparationWeight(safeThickness);
   const thinMin = lerp(
@@ -605,19 +883,19 @@ function normalizeWireAbsolutes(values: Partial<WireValues>): WireValues {
       values.WIRE_THICKNESS,
       WIRE_CONTROL_LIMITS.THICKNESS_MIN,
       WIRE_CONTROL_LIMITS.THICKNESS_MAX,
-      DEFAULT_CONFIG.WIRE_THICKNESS,
+      DEFAULT_WIRE_GEOMETRY.WIRE_THICKNESS,
     ),
     WIRE_SEPARATION: clampFinite(
       values.WIRE_SEPARATION,
       WIRE_CONTROL_LIMITS.SEPARATION_MIN,
       WIRE_CONTROL_LIMITS.SEPARATION_MAX,
-      DEFAULT_CONFIG.WIRE_SEPARATION,
+      DEFAULT_WIRE_GEOMETRY.WIRE_SEPARATION,
     ),
     WIRE_TWISTS: Math.round(clampFinite(
       values.WIRE_TWISTS,
       WIRE_CONTROL_LIMITS.TWISTS_MIN,
       WIRE_CONTROL_LIMITS.TWISTS_MAX,
-      DEFAULT_CONFIG.WIRE_TWISTS,
+      DEFAULT_WIRE_GEOMETRY.WIRE_TWISTS,
     )),
   };
 }

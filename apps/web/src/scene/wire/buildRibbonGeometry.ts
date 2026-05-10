@@ -1,5 +1,4 @@
-import { BufferAttribute, BufferGeometry, Vector3 } from 'three';
-import type { TwistedCurve } from './TwistedCurve.ts';
+import { BufferAttribute, BufferGeometry, type Curve, Vector3 } from 'three';
 
 // ---------------------------------------------------------------------------
 // Ribbon geometry for billboarded wires
@@ -37,22 +36,38 @@ export interface RibbonBuffers {
   segments: number;
 }
 
+export interface BatchedRibbonBuffers extends RibbonBuffers {
+  curveCount: number;
+}
+
 export function allocateRibbonBuffers(segments: number): RibbonBuffers {
-  const vertexCount = (segments + 1) * 2;
-  const indexCount = segments * 6;
+  return allocateBatchedRibbonBuffers(1, segments);
+}
+
+export function allocateBatchedRibbonBuffers(
+  curveCount: number,
+  segments: number,
+): BatchedRibbonBuffers {
+  const safeCurveCount = Math.max(1, curveCount);
+  const verticesPerCurve = (segments + 1) * 2;
+  const vertexCount = safeCurveCount * verticesPerCurve;
+  const indexCount = safeCurveCount * segments * 6;
   const indices = new Uint32Array(indexCount);
   let idx = 0;
-  for (let i = 0; i < segments; i++) {
-    const a = i * 2;
-    const b = (i + 1) * 2;
-    const c = (i + 1) * 2 + 1;
-    const d = i * 2 + 1;
-    indices[idx++] = a;
-    indices[idx++] = b;
-    indices[idx++] = d;
-    indices[idx++] = b;
-    indices[idx++] = c;
-    indices[idx++] = d;
+  for (let curveIndex = 0; curveIndex < safeCurveCount; curveIndex++) {
+    const vertexBase = curveIndex * verticesPerCurve;
+    for (let i = 0; i < segments; i++) {
+      const a = vertexBase + i * 2;
+      const b = vertexBase + (i + 1) * 2;
+      const c = vertexBase + (i + 1) * 2 + 1;
+      const d = vertexBase + i * 2 + 1;
+      indices[idx++] = a;
+      indices[idx++] = b;
+      indices[idx++] = d;
+      indices[idx++] = b;
+      indices[idx++] = c;
+      indices[idx++] = d;
+    }
   }
 
   const positions = new Float32Array(vertexCount * 3);
@@ -61,23 +76,29 @@ export function allocateRibbonBuffers(segments: number): RibbonBuffers {
   const tangents = new Float32Array(vertexCount * 3);
   const sides = new Float32Array(vertexCount);
 
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    // Left vertex: side = -1, V = 0
-    uvs[i * 4] = t;
-    uvs[i * 4 + 1] = 0;
-    sides[i * 2] = -1;
-    // Right vertex: side = +1, V = 1
-    uvs[i * 4 + 2] = t;
-    uvs[i * 4 + 3] = 1;
-    sides[i * 2 + 1] = 1;
+  for (let curveIndex = 0; curveIndex < safeCurveCount; curveIndex++) {
+    const vertexBase = curveIndex * verticesPerCurve;
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const leftVertex = vertexBase + i * 2;
+      const rightVertex = leftVertex + 1;
 
-    normals[i * 6] = 0;
-    normals[i * 6 + 1] = 0;
-    normals[i * 6 + 2] = 1;
-    normals[i * 6 + 3] = 0;
-    normals[i * 6 + 4] = 0;
-    normals[i * 6 + 5] = 1;
+      // Left vertex: side = -1, V = 0
+      uvs[leftVertex * 2] = t;
+      uvs[leftVertex * 2 + 1] = 0;
+      sides[leftVertex] = -1;
+      // Right vertex: side = +1, V = 1
+      uvs[rightVertex * 2] = t;
+      uvs[rightVertex * 2 + 1] = 1;
+      sides[rightVertex] = 1;
+
+      normals[leftVertex * 3] = 0;
+      normals[leftVertex * 3 + 1] = 0;
+      normals[leftVertex * 3 + 2] = 1;
+      normals[rightVertex * 3] = 0;
+      normals[rightVertex * 3 + 1] = 0;
+      normals[rightVertex * 3 + 2] = 1;
+    }
   }
 
   const geometry = new BufferGeometry();
@@ -87,7 +108,7 @@ export function allocateRibbonBuffers(segments: number): RibbonBuffers {
   geometry.setAttribute('aTangent', new BufferAttribute(tangents, 3));
   geometry.setAttribute('aSide', new BufferAttribute(sides, 1));
   geometry.setIndex(new BufferAttribute(indices, 1));
-  return { geometry, positions, tangents, segments };
+  return { geometry, positions, tangents, segments, curveCount: safeCurveCount };
 }
 
 const _P = new Vector3();
@@ -98,44 +119,62 @@ const _T = new Vector3();
 // shader handles width extrusion from `cameraPosition`.
 export function writeRibbonPositions(
   buffers: RibbonBuffers,
-  curve: TwistedCurve,
+  curve: Curve<Vector3>,
 ): void {
-  const { positions, tangents, segments, geometry } = buffers;
-  for (let i = 0; i <= segments; i++) {
-    const t = i / segments;
-    curve.getPoint(t, _P);
-    // Use the TWISTED curve's tangent, not the base curve's. The base
-    // Catmull-Rom tangent points along the overall wire path, but the
-    // actual visible cord follows the twisted offset — sampling that
-    // tangent numerically gives us the direction the ribbon should be
-    // extruded perpendicular to, so the billboarding face stays flush
-    // with the visible cord at every twist. The old `baseCurve.getTangent`
-    // was producing a subtle lean that showed up as jagged silhouette
-    // wobble when the camera orbited.
-    curve.getTangent(t, _T);
-    _T.normalize();
+  writeBatchedRibbonPositions(
+    { ...buffers, curveCount: 1 },
+    [curve],
+  );
+}
 
-    const leftIdx = i * 2 * 3;
-    const rightIdx = (i * 2 + 1) * 3;
+export function writeBatchedRibbonPositions(
+  buffers: BatchedRibbonBuffers,
+  curves: Curve<Vector3>[],
+): void {
+  const { positions, tangents, segments, geometry, curveCount } = buffers;
+  const verticesPerCurve = (segments + 1) * 2;
+  const usedCurveCount = Math.min(curveCount, curves.length);
 
-    // Both duplicated verts sit exactly on the curve center — the shader
-    // moves them outward by +/- thickness along a view-aligned normal.
-    positions[leftIdx] = _P.x;
-    positions[leftIdx + 1] = _P.y;
-    positions[leftIdx + 2] = _P.z;
+  for (let curveIndex = 0; curveIndex < usedCurveCount; curveIndex++) {
+    const curve = curves[curveIndex]!;
+    const vertexBase = curveIndex * verticesPerCurve;
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      curve.getPoint(t, _P);
+      // Use the TWISTED curve's tangent, not the base curve's. The base
+      // Catmull-Rom tangent points along the overall wire path, but the
+      // actual visible cord follows the twisted offset — sampling that
+      // tangent numerically gives us the direction the ribbon should be
+      // extruded perpendicular to, so the billboarding face stays flush
+      // with the visible cord at every twist. The old `baseCurve.getTangent`
+      // was producing a subtle lean that showed up as jagged silhouette
+      // wobble when the camera orbited.
+      curve.getTangent(t, _T);
+      _T.normalize();
 
-    positions[rightIdx] = _P.x;
-    positions[rightIdx + 1] = _P.y;
-    positions[rightIdx + 2] = _P.z;
+      const leftIdx = (vertexBase + i * 2) * 3;
+      const rightIdx = (vertexBase + i * 2 + 1) * 3;
 
-    tangents[leftIdx] = _T.x;
-    tangents[leftIdx + 1] = _T.y;
-    tangents[leftIdx + 2] = _T.z;
+      // Both duplicated verts sit exactly on the curve center — the shader
+      // moves them outward by +/- thickness along a view-aligned normal.
+      positions[leftIdx] = _P.x;
+      positions[leftIdx + 1] = _P.y;
+      positions[leftIdx + 2] = _P.z;
 
-    tangents[rightIdx] = _T.x;
-    tangents[rightIdx + 1] = _T.y;
-    tangents[rightIdx + 2] = _T.z;
+      positions[rightIdx] = _P.x;
+      positions[rightIdx + 1] = _P.y;
+      positions[rightIdx + 2] = _P.z;
+
+      tangents[leftIdx] = _T.x;
+      tangents[leftIdx + 1] = _T.y;
+      tangents[leftIdx + 2] = _T.z;
+
+      tangents[rightIdx] = _T.x;
+      tangents[rightIdx + 1] = _T.y;
+      tangents[rightIdx + 2] = _T.z;
+    }
   }
+
   geometry.attributes.position!.needsUpdate = true;
   geometry.attributes.aTangent!.needsUpdate = true;
   geometry.computeBoundingSphere();

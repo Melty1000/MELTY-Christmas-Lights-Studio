@@ -52,14 +52,52 @@ export function buildPreset(name: string, id: string, config: Config, builtIn = 
   });
 }
 
-export function exportPresetFile(preset: Preset): void {
-  const blob = new Blob([JSON.stringify(preset, null, 2)], { type: 'application/json' });
+export function serializePreset(preset: Preset): string {
+  return JSON.stringify(preset, null, 2);
+}
+
+type ClipboardWriter = Pick<Clipboard, 'writeText'>;
+
+export async function copyTextToClipboard(
+  text: string,
+  clipboard: ClipboardWriter | undefined = globalThis.navigator?.clipboard,
+  timeoutMs = 1000,
+): Promise<boolean> {
+  if (!clipboard?.writeText) return false;
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      clipboard.writeText(text),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error('Clipboard write timed out'));
+        }, timeoutMs);
+      }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
+export function exportPresetFile(preset: Preset): string {
+  const json = serializePreset(preset);
+  const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
   link.download = `${preset.id || 'melty-preset'}.json`;
+  link.style.display = 'none';
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, 0);
+  return json;
 }
 
 export async function importPresetFile(file: File): Promise<Preset> {

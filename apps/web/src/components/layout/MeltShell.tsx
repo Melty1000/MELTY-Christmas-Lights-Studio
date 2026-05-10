@@ -10,15 +10,22 @@ import { NavLink, useLocation } from 'react-router-dom';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import {
+  Activity,
+  Box,
+  Cloud,
   Lightbulb,
   Heart,
+  Save,
   Settings as SettingsIcon,
   ExternalLink,
   Eye,
   EyeOff,
+  Palette,
+  Sun,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
+import { STUDIO_TABS, type StudioTabId } from '~/lib/studioTabs.ts';
 
 gsap.registerPlugin(useGSAP);
 
@@ -29,14 +36,28 @@ interface NavItem {
   end?: boolean;
 }
 
+const STUDIO_TAB_ICONS: Record<StudioTabId, typeof Lightbulb> = {
+  layout: Box,
+  theme: Palette,
+  lighting: Sun,
+  motion: Activity,
+  environment: Cloud,
+  presets: Save,
+};
+
 const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: 'Studio', icon: Lightbulb, end: true },
+  ...STUDIO_TABS.map((tab) => ({
+    to: tab.to,
+    label: tab.label,
+    icon: STUDIO_TAB_ICONS[tab.id],
+    end: tab.id === 'layout',
+  })),
   { to: '/support', label: 'Support', icon: Heart },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];
 
 const PAGE_META: Record<string, { topbar: string }> = {
-  '/': { topbar: 'Studio' },
+  ...Object.fromEntries(STUDIO_TABS.map((tab) => [tab.to, { topbar: tab.label }])),
   '/support': { topbar: 'Support' },
   '/settings': { topbar: 'Settings' },
 };
@@ -46,6 +67,7 @@ const PREVIEW_VISIBLE_KEY = 'melty.previewVisible';
 const PREVIEW_MIN_WIDTH = 280;
 const PREVIEW_MAX_WIDTH = 900;
 const PREVIEW_DEFAULT_WIDTH = 480;
+const MAIN_MIN_WIDTH = 420;
 
 const SIDEBAR_COLLAPSED = '64px';
 const SIDEBAR_EXPANDED = '142px';
@@ -86,8 +108,19 @@ export function MeltShell({ children }: MeltShellProps) {
     if (!Number.isFinite(stored) || stored <= 0) return PREVIEW_DEFAULT_WIDTH;
     return Math.min(PREVIEW_MAX_WIDTH, Math.max(PREVIEW_MIN_WIDTH, stored));
   });
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === 'undefined' ? 1280 : window.innerWidth,
+  );
   const [isResizing, setIsResizing] = useState(false);
   const draggingRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -113,8 +146,12 @@ export function MeltShell({ children }: MeltShellProps) {
     const onMove = (e: PointerEvent) => {
       if (!draggingRef.current) return;
       const viewport = window.innerWidth;
-      const next = Math.min(
+      const maxWidthForViewport = Math.min(
         PREVIEW_MAX_WIDTH,
+        Math.max(PREVIEW_MIN_WIDTH, viewport - 64 - MAIN_MIN_WIDTH),
+      );
+      const next = Math.min(
+        maxWidthForViewport,
         Math.max(PREVIEW_MIN_WIDTH, viewport - e.clientX),
       );
       setPreviewWidth(next);
@@ -209,6 +246,13 @@ export function MeltShell({ children }: MeltShellProps) {
   const apiTone =
     connection === 'connected' ? 'good' : connection === 'connecting' ? 'warn' : 'neutral';
   const shellTransitionMs = expanded ? SIDEBAR_EXPAND_MS : SIDEBAR_COLLAPSE_MS;
+  const maxPreviewWidth = Math.min(
+    PREVIEW_MAX_WIDTH,
+    Math.max(0, viewportWidth - 64 - MAIN_MIN_WIDTH),
+  );
+  const previewCanFit = maxPreviewWidth >= PREVIEW_MIN_WIDTH;
+  const previewActive = previewVisible && previewCanFit;
+  const effectivePreviewWidth = Math.min(previewWidth, maxPreviewWidth);
 
   function handleSidebarEnter() {
     if (expandTimeoutRef.current) {
@@ -336,11 +380,11 @@ export function MeltShell({ children }: MeltShellProps) {
           <button
             type="button"
             onClick={() => setPreviewVisible((prev) => !prev)}
-            title={previewVisible ? 'Hide live preview' : 'Show live preview'}
+            title={previewActive ? 'Hide live preview' : 'Show live preview'}
             className="flex h-8 items-center gap-2 rounded-full border border-melt-text-muted/10 bg-melt-surface/30 px-3 text-[9px] font-black tracking-[0.24em] uppercase text-melt-text-label transition-colors duration-200 hover:border-melt-accent/30 hover:text-melt-text-heading"
           >
-            {previewVisible ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
-            <span className="hidden md:inline">{previewVisible ? 'Hide Preview' : 'Show Preview'}</span>
+            {previewActive ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+            <span className="hidden md:inline">{previewActive ? 'Hide Preview' : 'Show Preview'}</span>
           </button>
           <button
             type="button"
@@ -364,7 +408,7 @@ export function MeltShell({ children }: MeltShellProps) {
           </div>
         </div>
 
-        {previewVisible ? (
+        {previewActive ? (
           <>
             <div
               onPointerDown={handleResizeStart}
@@ -382,7 +426,7 @@ export function MeltShell({ children }: MeltShellProps) {
                   users don't need pixel-perfect aim. */}
               <div className="absolute inset-y-0 -left-2 -right-2" />
             </div>
-            <PreviewPane width={previewWidth} suppressPointer={isResizing} />
+            <PreviewPane width={effectivePreviewWidth} suppressPointer={isResizing} />
           </>
         ) : null}
       </main>

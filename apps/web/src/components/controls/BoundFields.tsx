@@ -1,5 +1,16 @@
 import { useCallback } from 'react';
-import type { Config } from '@melty/shared';
+import { useShallow } from 'zustand/react/shallow';
+import {
+  SLIDER_CONTROL_SPECS,
+  USER_SLIDER_MAX,
+  USER_SLIDER_MIN,
+  USER_SLIDER_STEP,
+  sliderDisplayValue,
+  sliderLabel,
+  sliderPatchFromDisplay,
+  type Config,
+  type SliderControlId,
+} from '@melty/shared';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 import { RangeField, SelectField, ToggleField } from './ControlPrimitives.tsx';
 
@@ -27,10 +38,6 @@ import { RangeField, SelectField, ToggleField } from './ControlPrimitives.tsx';
 //   • The Bound* variants are the default used for every config slider
 //     throughout Studio.
 
-type NumericKey = {
-  [K in keyof Config]: Config[K] extends number ? K : never
-}[keyof Config];
-
 type BooleanKey = {
   [K in keyof Config]: Config[K] extends boolean ? K : never
 }[keyof Config];
@@ -39,36 +46,30 @@ type StringKey = {
   [K in keyof Config]: Config[K] extends string ? K : never
 }[keyof Config];
 
-interface BoundRangeProps {
-  field: NumericKey;
-  label: string;
-  min: number;
-  max: number;
-  step: number;
-  round?: boolean;
+interface BoundSliderProps {
+  control: SliderControlId;
+  label?: string;
 }
 
-export function BoundRange({ field, label, min, max, step, round = false }: BoundRangeProps) {
-  const value = useConfigStore((s) => s.config[field] as number);
+export function BoundSlider({ control, label }: BoundSliderProps) {
+  const spec = SLIDER_CONTROL_SPECS[control];
+  useConfigStore(useShallow((s) => spec.dependencies.map((key) => s.config[key])));
   const patch = useConfigStore((s) => s.patch);
+  const value = sliderDisplayValue(control, useConfigStore.getState().config);
 
   const handleChange = useCallback(
     (next: number) => {
-      const rounded = round ? Math.round(next) : next;
-      // Patch is stable; the Config type indexing is too fine-grained for
-      // TS to narrow here, but each call site is pinned to a numeric key
-      // by the `field: NumericKey` constraint.
-      void patch({ [field]: rounded } as Partial<Config>);
+      void patch(sliderPatchFromDisplay(control, next, useConfigStore.getState().config));
     },
-    [field, patch, round],
+    [control, patch],
   );
 
   return (
     <RangeField
-      label={label}
-      min={min}
-      max={max}
-      step={step}
+      label={label ?? sliderLabel(control)}
+      min={USER_SLIDER_MIN}
+      max={USER_SLIDER_MAX}
+      step={USER_SLIDER_STEP}
       value={value}
       onChange={handleChange}
     />

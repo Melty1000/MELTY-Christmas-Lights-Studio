@@ -1,34 +1,30 @@
 import { Stars, Stats } from '@react-three/drei';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Bloom, EffectComposer, ToneMapping } from '@react-three/postprocessing';
-import { ToneMappingMode } from 'postprocessing';
+import { EffectComposer } from '@react-three/postprocessing';
 import { useEffect, useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
-  ACESFilmicToneMapping,
   type AmbientLight,
   CatmullRomCurve3,
-  type DirectionalLight,
   Group,
   HalfFloatType,
-  type HemisphereLight,
   type Mesh,
   type OrthographicCamera,
   NoToneMapping,
   type ShaderMaterial,
   Color,
   Vector3,
+  type Curve,
+  CubicBezierCurve3,
 } from 'three';
 import {
-  BloomEffect,
-  EffectPass,
-  type EffectComposer as EffectComposerImpl,
-} from 'postprocessing';
-import {
   DEFAULT_CONFIG,
+  DEFAULT_WIRE_GEOMETRY,
+  METAL_THEMES,
   SOCKET_THEMES,
   THEMES,
   WIRE_THEMES,
+  resolveWireGeometry,
   type Config,
 } from '@melty/shared';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
@@ -36,29 +32,71 @@ import { BillboardBulbs } from './BillboardBulbs.tsx';
 import { SnowField } from './SnowField.tsx';
 import { bulbTLocationsForSpans } from './utils.ts';
 import { generateLightLayoutPaths, type LightLayoutPath } from './wire/basePoints.ts';
-import { allocateRibbonBuffers, writeRibbonPositions } from './wire/buildRibbonGeometry.ts';
+import {
+  allocateBatchedRibbonBuffers,
+  allocateRibbonBuffers,
+  writeBatchedRibbonPositions,
+  writeRibbonPositions,
+} from './wire/buildRibbonGeometry.ts';
 import { ribbonSegmentCount } from './wire/buildTubeGeometry.ts';
 import { createWireMaterial } from './wire/createWireMaterial.ts';
 import { sampleBulbGuide } from './wire/bulbGuide.ts';
-import { pointSpillCol, pointSpillCount, pointSpillPos } from './wire/pointSpillState.ts';
+import { POINT_SPILL_MAX, pointSpillCol, pointSpillCount, pointSpillPos } from './wire/pointSpillState.ts';
 import { TwistedCurve } from './wire/TwistedCurve.ts';
+import { SampledCurve } from './wire/SampledCurve.ts';
 import { AlphaLift } from './effects/AlphaLift.tsx';
-import { socketJoinZBackLimit } from './bulbMetrics.ts';
+import { BulbHalo } from './effects/BulbHalo.tsx';
+import {
+  BILLBOARD_OFFSETS,
+  ORTHO_CAMERA_DEPTH_DIRECTION,
+  ORTHO_CAMERA_FORWARD,
+  billboardDepthBoost,
+  socketWireJoinDepth,
+} from './bulbMetrics.ts';
 
-const _K_LIGHT_TO = new Vector3();
-const _F_LIGHT_TO = new Vector3();
 const _bulbGuide = new Vector3();
+
+interface BulbRecord {
+  t: number;
+  point: Vector3;
+  directionVector: Vector3;
+  direction: [number, number, number];
+  baseColorHex: number;
+  socketColorHex: number;
+  strandId: 0 | 1;
+}
+
+interface SocketLeadDatum {
+  curve: CubicBezierCurve3;
+  color: number;
+  strandId: 0 | 1;
+}
+
+interface SocketLeadGroup {
+  color: number;
+  strandId: 0 | 1;
+  curves: CubicBezierCurve3[];
+}
 
 const BACKGROUND_COLOR = '#08111d';
 const ORTHO_VIEW_HEIGHT = 18;
 const ORTHO_BASE_DISTANCE = 22;
 const ORTHO_CAMERA_DISTANCE = 100;
-const CAMERA_FORWARD = new Vector3(0, 4.8, -15).normalize();
-const ORTHO_SCREEN_Y_SCALE = Math.sqrt(1 - CAMERA_FORWARD.y * CAMERA_FORWARD.y);
-const BLOOM_INTENSITY_CEILING = 2.4;
-const BLOOM_RESPONSE_CURVE = 1.1;
-const POSTPROCESS_BLOOM_SCALE = 0.06;
-const BLOOM_THRESHOLD_FLOOR = 0.96;
+const ORTHO_SCREEN_Y_SCALE = Math.sqrt(1 - ORTHO_CAMERA_FORWARD.y * ORTHO_CAMERA_FORWARD.y);
+const SOCKET_LEAD_SEGMENTS = 22;
+const SOCKET_LEAD_THICKNESS_SCALE = 0.52;
+const SOCKET_LEAD_T_SPAN_MAX = 0.018;
+const SOCKET_LEAD_T_SPAN_FACTOR = 0.38;
+const SOCKET_LEAD_SOCKET_HALF_WIDTH = 0.052;
+const SOCKET_LEAD_SURFACE_EXIT_SCALE = 0.7;
+const SOCKET_LEAD_BLOCKED_SURFACE_EXIT_MULTIPLIER = 0.18;
+const SOCKET_LEAD_Z_CLEARANCE = 0.18;
+const SOCKET_LEAD_SOCKET_Z_FRONT = 0.08;
+const SOCKET_LEAD_START_EMBED_SCALE = 0.35;
+const SOCKET_LEAD_START_TAPER = 0;
+const SOCKET_LEAD_TAPER_MIN_SCALE = 1;
+const DEBUG_FORCE_SOCKET_LEADS_WHITE = false;
+const DEBUG_SOCKET_LEAD_COLOR = 0xffffff;
 const _cameraTarget = new Vector3();
 const _cameraEye = new Vector3();
 
@@ -68,36 +106,43 @@ const _cameraEye = new Vector3();
 //
 // Before this split, `Scene` subscribed to the whole config object. Every
 // slider tick produced a new config reference, which re-rendered Scene →
-// Canvas → every child under R3F, including the 80-item pointLight list in
-// BillboardBulbs. That's the reason dragging BULB_SCALE / EMISSIVE /
+// Canvas -> every child under R3F, including the old real point-light list in
+// BillboardBulbs. That's the reason dragging BULB_SCALE / internal glow /
 // AMBIENT / CAMERA_* felt heavy: React was reconciling an entire 3D scene
 // graph per pixel of drag.
 //
 // The fix is to subscribe only to *structural* fields — the ones that
 // change mount/unmount, geometry topology, theme lookups, or feature
 // toggles. Everything else (continuous intensities, camera position, sway,
-// bloom params, bulb scale, glass opacity) is read imperatively in
+// halo params, glass opacity) is read imperatively in
 // useFrame via `useConfigStore.getState()`, so dragging those sliders just
 // updates the next GL frame without any React work.
 interface StructuralConfig {
   NUM_PINS: number;
   LIGHTS_PER_SEGMENT: number;
   SAG_AMPLITUDE: number;
-  TENSION: number;
   WIRE_SEPARATION: number;
   WIRE_THICKNESS: number;
   WIRE_TWISTS: number;
-  LIGHT_LAYOUT: Config['LIGHT_LAYOUT'];
-  LAYOUT_MARGIN: number;
-  LAYOUT_SCALE: number;
-  LAYOUT_OFFSET_X: number;
-  LAYOUT_OFFSET_Y: number;
+  WIRE_COLOR_OVERRIDE_ENABLED: boolean;
+  WIRE_A_COLOR: number;
+  WIRE_B_COLOR: number;
+  WIRE_A_LEAD_COLOR: number;
+  WIRE_B_LEAD_COLOR: number;
+  BULB_ORIENTATION_MODE: Config['BULB_ORIENTATION_MODE'];
+  LAYOUT_MODE: Config['LAYOUT_MODE'];
+  LAYOUT_EDGES: Config['LAYOUT_EDGES'];
+  LAYOUT_SHAPE_SIDES: Config['LAYOUT_SHAPE_SIDES'];
+  LAYOUT_CORNER_ROUNDNESS: Config['LAYOUT_CORNER_ROUNDNESS'];
+  LAYOUT_INSET: number;
+  LAYOUT_SIZE: number;
+  LAYOUT_POSITION_X: number;
+  LAYOUT_POSITION_Y: number;
   WIRE_THEME: Config['WIRE_THEME'];
   SOCKET_THEME: Config['SOCKET_THEME'];
   ACTIVE_THEME: Config['ACTIVE_THEME'];
   BULB_SCALE: number;
-  POINT_LIGHTS_ENABLED: boolean;
-  POSTFX_ENABLED: boolean;
+  CAMERA_DISTANCE: number;
   BACKGROUND_ENABLED: boolean;
   ANTIALIAS_ENABLED: boolean;
   STATS_ENABLED: boolean;
@@ -112,27 +157,53 @@ interface StructuralConfig {
   SNOW_DRIFT: number;
 }
 
+function layoutInsetForConfig(config: Config): number {
+  switch (config.LAYOUT_MODE) {
+    case 'SHAPE':
+      return config.SHAPE_PADDING;
+    case 'EDGES':
+      return config.EDGE_INSET;
+  }
+}
+
+function layoutSizeForConfig(config: Config): number {
+  switch (config.LAYOUT_MODE) {
+    case 'SHAPE':
+      return 1;
+    case 'EDGES':
+      return config.EDGE_COVERAGE;
+  }
+}
+
 function selectStructural(state: { config: Config }): StructuralConfig {
   const c = state.config;
+  const wire = resolveWireGeometry(c);
   return {
     NUM_PINS: c.NUM_PINS,
     LIGHTS_PER_SEGMENT: c.LIGHTS_PER_SEGMENT,
     SAG_AMPLITUDE: c.SAG_AMPLITUDE,
-    TENSION: c.TENSION,
-    WIRE_SEPARATION: c.WIRE_SEPARATION,
-    WIRE_THICKNESS: c.WIRE_THICKNESS,
-    WIRE_TWISTS: c.WIRE_TWISTS,
-    LIGHT_LAYOUT: c.LIGHT_LAYOUT,
-    LAYOUT_MARGIN: c.LAYOUT_MARGIN,
-    LAYOUT_SCALE: c.LAYOUT_SCALE,
-    LAYOUT_OFFSET_X: c.LAYOUT_OFFSET_X,
-    LAYOUT_OFFSET_Y: c.LAYOUT_OFFSET_Y,
+    WIRE_SEPARATION: wire.WIRE_SEPARATION,
+    WIRE_THICKNESS: wire.WIRE_THICKNESS,
+    WIRE_TWISTS: wire.WIRE_TWISTS,
+    WIRE_COLOR_OVERRIDE_ENABLED: c.WIRE_COLOR_OVERRIDE_ENABLED,
+    WIRE_A_COLOR: c.WIRE_A_COLOR,
+    WIRE_B_COLOR: c.WIRE_B_COLOR,
+    WIRE_A_LEAD_COLOR: c.WIRE_A_LEAD_COLOR,
+    WIRE_B_LEAD_COLOR: c.WIRE_B_LEAD_COLOR,
+    BULB_ORIENTATION_MODE: c.BULB_ORIENTATION_MODE,
+    LAYOUT_MODE: c.LAYOUT_MODE,
+    LAYOUT_EDGES: c.LAYOUT_EDGES,
+    LAYOUT_SHAPE_SIDES: c.LAYOUT_SHAPE_SIDES,
+    LAYOUT_CORNER_ROUNDNESS: c.LAYOUT_CORNER_ROUNDNESS,
+    LAYOUT_INSET: layoutInsetForConfig(c),
+    LAYOUT_SIZE: layoutSizeForConfig(c),
+    LAYOUT_POSITION_X: c.LAYOUT_POSITION_X,
+    LAYOUT_POSITION_Y: c.LAYOUT_POSITION_Y,
     WIRE_THEME: c.WIRE_THEME,
     SOCKET_THEME: c.SOCKET_THEME,
     ACTIVE_THEME: c.ACTIVE_THEME,
     BULB_SCALE: c.BULB_SCALE,
-    POINT_LIGHTS_ENABLED: c.POINT_LIGHTS_ENABLED,
-    POSTFX_ENABLED: c.POSTFX_ENABLED,
+    CAMERA_DISTANCE: c.CAMERA_DISTANCE,
     BACKGROUND_ENABLED: c.BACKGROUND_ENABLED,
     ANTIALIAS_ENABLED: c.ANTIALIAS_ENABLED,
     STATS_ENABLED: c.STATS_ENABLED,
@@ -151,8 +222,8 @@ function selectStructural(state: { config: Config }): StructuralConfig {
 export function Scene() {
   // `useShallow` returns the same object ref when every field is ===, so
   // Scene only re-renders when a *structural* field actually changes.
-  // Dragging BULB_SCALE, AMBIENT_INTENSITY, CAMERA_*, BLOOM_*, SWAY_*, etc.
-  // does NOT land here.
+  // Bulb scale intentionally lands here because wire dips/socket leads and
+  // billboard bulb placement must all use the same attachment math.
   const structural = useConfigStore(useShallow(selectStructural));
 
   return (
@@ -189,36 +260,36 @@ export function Scene() {
 
 function SceneContent({ structural }: { structural: StructuralConfig }) {
   const activeTheme = THEMES[structural.ACTIVE_THEME];
-  const wireTheme = WIRE_THEMES[structural.WIRE_THEME];
+  const baseWireTheme = WIRE_THEMES[structural.WIRE_THEME];
+  const wireTheme = structural.WIRE_COLOR_OVERRIDE_ENABLED
+    ? { A: structural.WIRE_A_COLOR, B: structural.WIRE_B_COLOR }
+    : baseWireTheme;
+  const leadTheme = structural.WIRE_COLOR_OVERRIDE_ENABLED
+    ? { A: structural.WIRE_A_LEAD_COLOR, B: structural.WIRE_B_LEAD_COLOR }
+    : wireTheme;
+  const socketLeadTheme = DEBUG_FORCE_SOCKET_LEADS_WHITE
+    ? { A: DEBUG_SOCKET_LEAD_COLOR, B: DEBUG_SOCKET_LEAD_COLOR }
+    : leadTheme;
+  const wireMetalness = !structural.WIRE_COLOR_OVERRIDE_ENABLED
+    && (METAL_THEMES.WIRE as readonly string[]).includes(structural.WIRE_THEME)
+    ? 1
+    : 0;
+  const socketMetalness = structural.SOCKET_THEME === 'WIRE_MATCH'
+    ? wireMetalness
+    : ((METAL_THEMES.SOCKET as readonly string[]).includes(structural.SOCKET_THEME) ? 1 : 0);
   const size = useThree((state) => state.size);
   const swayGroupRef = useRef<Group>(null);
   const ambientRef = useRef<AmbientLight>(null);
-  const keyLightRef = useRef<DirectionalLight>(null);
-  const fillLightRef = useRef<DirectionalLight>(null);
-  const hemiLightRef = useRef<HemisphereLight>(null);
-  // We reach the BloomEffect through the EffectComposer ref rather than a
-  // direct ref on <Bloom>. `@react-three/postprocessing`'s `wrapEffect`
-  // uses `JSON.stringify(props)` as a useMemo dep (util.tsx:34), and in
-  // React 19 `ref` is now a regular prop. A ref on <Bloom> ends up in the
-  // stringified props, which then walks into the Three.js parent/children
-  // cycle on the resolved BloomEffect and throws "Converting circular
-  // structure to JSON". <EffectComposer> DOES use forwardRef so this path
-  // is safe, and we find the Bloom pass by walking composer.passes each
-  // frame — cheap and lets us tune intensity/threshold imperatively with
-  // zero React work on slider drag.
-  const composerRef = useRef<EffectComposerImpl>(null);
-  const bloomEffectRef = useRef<BloomEffect | null>(null);
   const gl = useThree((state) => state.gl);
 
-  // Keep renderer tone mapping in sync with the PostFX toggle. With PostFX on,
-  // the composer applies tone mapping after Bloom has worked on linear HDR
-  // values — so the renderer must stay in NoToneMapping to avoid mapping
-  // twice (which collapsed the scene to near-black whenever the opaque
-  // background was off). With PostFX off, the renderer itself handles it.
+  // Keep the renderer in raw mode because the composer owns the final pass.
+  // The composer stays mounted even when PostFX is toggled off; unmounting it
+  // changes the live R3F render pipeline and can leave a transparent canvas
+  // looking empty until a hard reset.
   useEffect(() => {
-    gl.toneMapping = structural.POSTFX_ENABLED ? NoToneMapping : ACESFilmicToneMapping;
+    gl.toneMapping = NoToneMapping;
     gl.toneMappingExposure = 1.2;
-  }, [gl, structural.POSTFX_ENABLED]);
+  }, [gl]);
 
   const layoutViewport = useMemo(() => {
     const aspect = size.height > 0 ? size.width / size.height : 16 / 9;
@@ -228,29 +299,34 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
     };
   }, [size.height, size.width]);
 
+  const layoutEdgesKey = structural.LAYOUT_EDGES.join('|');
   const layoutPaths = useMemo(
     () =>
       generateLightLayoutPaths({
-        layout: structural.LIGHT_LAYOUT,
+        layoutMode: structural.LAYOUT_MODE,
+        layoutEdges: structural.LAYOUT_EDGES,
+        shapeSides: structural.LAYOUT_SHAPE_SIDES,
+        cornerRoundness: structural.LAYOUT_CORNER_ROUNDNESS,
         viewport: layoutViewport,
         numPins: structural.NUM_PINS,
         sagAmplitude: structural.SAG_AMPLITUDE,
-        tension: structural.TENSION,
-        margin: structural.LAYOUT_MARGIN,
-        scale: structural.LAYOUT_SCALE,
-        offsetX: structural.LAYOUT_OFFSET_X,
-        offsetY: structural.LAYOUT_OFFSET_Y,
+        margin: structural.LAYOUT_INSET,
+        scale: structural.LAYOUT_SIZE,
+        offsetX: structural.LAYOUT_POSITION_X,
+        offsetY: structural.LAYOUT_POSITION_Y,
       }),
     [
       layoutViewport,
-      structural.LIGHT_LAYOUT,
-      structural.LAYOUT_MARGIN,
-      structural.LAYOUT_OFFSET_X,
-      structural.LAYOUT_OFFSET_Y,
-      structural.LAYOUT_SCALE,
+      layoutEdgesKey,
+      structural.LAYOUT_CORNER_ROUNDNESS,
+      structural.LAYOUT_MODE,
+      structural.LAYOUT_SHAPE_SIDES,
+      structural.LAYOUT_INSET,
+      structural.LAYOUT_POSITION_X,
+      structural.LAYOUT_POSITION_Y,
+      structural.LAYOUT_SIZE,
       structural.NUM_PINS,
       structural.SAG_AMPLITUDE,
-      structural.TENSION,
     ],
   );
 
@@ -270,49 +346,6 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
     }
 
     if (ambientRef.current) ambientRef.current.intensity = c.AMBIENT_INTENSITY;
-    if (keyLightRef.current) keyLightRef.current.intensity = c.KEY_LIGHT_INTENSITY;
-    if (fillLightRef.current) fillLightRef.current.intensity = c.FILL_LIGHT_INTENSITY;
-    if (hemiLightRef.current) hemiLightRef.current.intensity = c.HEMI_LIGHT_INTENSITY;
-
-    // Bloom live-tune. We cache the BloomEffect instance the first time we
-    // see it by walking composer.passes[].effects. Writing to the instance
-    // directly avoids a React re-render on every BLOOM_* drag AND avoids
-    // the wrapEffect JSON.stringify(props) hazard that Bloom props would
-    // trigger on any prop change.
-    let bloom = bloomEffectRef.current;
-    if (!bloom) {
-      const composer = composerRef.current;
-      if (composer) {
-        for (const pass of composer.passes) {
-          if (pass instanceof EffectPass) {
-            // EffectPass keeps its effects in a private-ish `effects` array
-            // that's been on the public class since postprocessing 6.x.
-            const effects = (pass as unknown as { effects: readonly unknown[] }).effects;
-            if (effects) {
-              for (const eff of effects) {
-                if (eff instanceof BloomEffect) {
-                  bloom = eff;
-                  bloomEffectRef.current = eff;
-                  break;
-                }
-              }
-            }
-          }
-          if (bloom) break;
-        }
-      }
-    }
-    if (bloom) {
-      // Visible bulb glow is handled by explicit colored halo billboards in
-      // BillboardBulbs. This post bloom pass now stays tiny: it only catches
-      // the hottest bulb pixels for sparkle instead of turning bright wires
-      // and sockets into ambient light.
-      bloom.intensity = computeBloomIntensity(c.BLOOM_STRENGTH, c.BLOOM_INTENSITY) * POSTPROCESS_BLOOM_SCALE;
-      const lum = bloom.luminanceMaterial;
-      if (lum?.uniforms?.threshold) {
-        lum.uniforms.threshold.value = Math.max(BLOOM_THRESHOLD_FLOOR, c.BLOOM_THRESHOLD);
-      }
-    }
   });
 
   return (
@@ -323,19 +356,6 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
       <CameraPose />
 
       <ambientLight ref={ambientRef} intensity={0} />
-      <directionalLight
-        name="melt-key"
-        ref={keyLightRef}
-        intensity={0}
-        position={[0, 12, 12]}
-      />
-      <directionalLight
-        name="melt-fill"
-        ref={fillLightRef}
-        intensity={0}
-        position={[0, 4, -12]}
-      />
-      <hemisphereLight name="melt-hemi" ref={hemiLightRef} args={['#eef5ff', '#0a0a12', 0]} />
 
       {structural.STARS_ENABLED ? (
         <Stars
@@ -358,9 +378,8 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
         />
       ) : null}
 
-      {/* Per-bulb halo geometry carries the visible colored glow. The global
-          Bloom pass stays post-FX-only so it cannot wash the scene like
-          ambient light. */}
+      {/* Bulbs render their glass normally; outside glow is drawn later by the
+          isolated halo post effect from per-bulb emitter state. */}
       <group ref={swayGroupRef}>
         {layoutPaths.map((path, index) => (
           <LightString
@@ -369,18 +388,18 @@ function SceneContent({ structural }: { structural: StructuralConfig }) {
             structural={structural}
             activeTheme={activeTheme}
             wireTheme={wireTheme}
+            leadTheme={socketLeadTheme}
+            wireMetalness={wireMetalness}
+            socketMetalness={socketMetalness}
             resetPointSpill={index === 0}
           />
         ))}
       </group>
 
-      {structural.POSTFX_ENABLED ? (
-        <PostFX
-          antialiased={structural.ANTIALIAS_ENABLED}
-          backgroundEnabled={structural.BACKGROUND_ENABLED}
-          composerRef={composerRef}
-        />
-      ) : null}
+      <PostFX
+        antialiased={structural.ANTIALIAS_ENABLED}
+        backgroundEnabled={structural.BACKGROUND_ENABLED}
+      />
 
       {structural.STATS_ENABLED ? <Stats className="!left-4 !top-4" /> : null}
     </>
@@ -392,16 +411,26 @@ function LightString({
   structural,
   activeTheme,
   wireTheme,
+  leadTheme,
+  wireMetalness,
+  socketMetalness,
   resetPointSpill,
 }: {
   path: LightLayoutPath;
   structural: StructuralConfig;
   activeTheme: { bulbs: number[] };
   wireTheme: { A: number; B: number };
+  leadTheme: { A: number; B: number };
+  wireMetalness: number;
+  socketMetalness: number;
   resetPointSpill: boolean;
 }) {
   const baseCurve = useMemo(
-    () => new CatmullRomCurve3(path.points, path.closed ?? false, 'centripetal'),
+    () => (
+      path.curveMode === 'SAMPLED'
+        ? new SampledCurve(path.points, path.closed ?? false)
+        : new CatmullRomCurve3(path.points, path.closed ?? false, 'centripetal')
+    ),
     [path],
   );
 
@@ -410,21 +439,56 @@ function LightString({
     [path.spanCount, structural.LIGHTS_PER_SEGMENT],
   );
 
-  const evenLocations = useMemo(
-    () => locations.filter((_, index) => index % 2 === 0),
-    [locations],
-  );
-
-  const oddLocations = useMemo(
-    () => locations.filter((_, index) => index % 2 !== 0),
-    [locations],
-  );
   const wireSeparation = structural.WIRE_SEPARATION;
   const wireTwists = structural.WIRE_TWISTS;
+  const wireFrameMode = path.wireFrameMode ?? 'AUTO';
   const separationCompensation = Math.max(
     0,
-    wireSeparation - DEFAULT_CONFIG.WIRE_SEPARATION,
+    wireSeparation - DEFAULT_WIRE_GEOMETRY.WIRE_SEPARATION,
   );
+
+  const bulbRecords = useMemo<BulbRecord[]>(() => (
+    locations.map((t, index) => {
+      const point = baseCurve.getPoint(t);
+      const direction = computeBulbDirection(
+        baseCurve,
+        t,
+        point,
+        path.bulbTarget,
+        path.bulbGuidePoints,
+        structural.BULB_ORIENTATION_MODE,
+        path.id,
+        index,
+      );
+      const directionVector = new Vector3(direction[0], direction[1], direction[2]);
+      const strandId = (index % 2 === 0 ? 0 : 1) as 0 | 1;
+      const strandColorHex = strandId === 0 ? wireTheme.A : wireTheme.B;
+      const socketColorHex = structural.SOCKET_THEME === 'WIRE_MATCH'
+        ? strandColorHex
+        : (SOCKET_THEMES[structural.SOCKET_THEME] ?? wireTheme.A);
+
+      return {
+        t,
+        point,
+        directionVector,
+        direction,
+        baseColorHex: activeTheme.bulbs[index % activeTheme.bulbs.length]!,
+        socketColorHex,
+        strandId,
+      };
+    })
+  ), [
+    activeTheme.bulbs,
+    baseCurve,
+    path.bulbGuidePoints,
+    path.bulbTarget,
+    path.id,
+    structural.BULB_ORIENTATION_MODE,
+    structural.SOCKET_THEME,
+    locations,
+    wireTheme.A,
+    wireTheme.B,
+  ]);
 
   const wireA = useMemo(
     () => new TwistedCurve(
@@ -432,24 +496,14 @@ function LightString({
       wireSeparation,
       wireTwists,
       0,
-      evenLocations,
-      oddLocations,
-      structural.BULB_SCALE,
-      true,
-      path.bulbTarget,
-      path.bulbGuidePoints,
-      separationCompensation,
+      wireFrameMode,
+      path.closed ?? false,
     ),
     [
       baseCurve,
-      path.bulbGuidePoints,
-      path.bulbTarget,
-      structural.BULB_SCALE,
       wireTwists,
       wireSeparation,
-      separationCompensation,
-      evenLocations,
-      oddLocations,
+      wireFrameMode,
     ],
   );
 
@@ -459,43 +513,142 @@ function LightString({
       wireSeparation,
       wireTwists,
       Math.PI,
-      oddLocations,
-      evenLocations,
-      structural.BULB_SCALE,
-      true,
-      path.bulbTarget,
-      path.bulbGuidePoints,
-      separationCompensation,
+      wireFrameMode,
+      path.closed ?? false,
     ),
     [
       baseCurve,
-      path.bulbGuidePoints,
-      path.bulbTarget,
-      structural.BULB_SCALE,
       wireTwists,
       wireSeparation,
-      separationCompensation,
-      evenLocations,
-      oddLocations,
+      wireFrameMode,
     ],
   );
 
-  const bulbData = useMemo(() => (
-    locations.map((t, index) => {
-      const point = baseCurve.getPoint(t);
-      const direction = computeBulbDirection(baseCurve, t, point, path.bulbTarget, path.bulbGuidePoints);
-      const socketColorHex = structural.SOCKET_THEME === 'WIRE_MATCH'
-        ? (index % 2 === 0 ? wireTheme.A : wireTheme.B)
-        : (SOCKET_THEMES[structural.SOCKET_THEME] ?? wireTheme.A);
-
+  const renderedBulbRecords = useMemo<BulbRecord[]>(() => {
+    return bulbRecords.map((record) => {
+      const assignedCurve = record.strandId === 0 ? wireA : wireB;
       return {
-        baseColorHex: activeTheme.bulbs[index % activeTheme.bulbs.length]!,
-        position: [point.x, point.y, point.z] as [number, number, number],
-        direction,
-        socketColorHex,
+        ...record,
+        point: assignedCurve.getPoint(record.t),
       };
-    })
-  ), [activeTheme.bulbs, baseCurve, path.bulbGuidePoints, path.bulbTarget, structural.SOCKET_THEME, locations, wireTheme.A, wireTheme.B]);
+    });
+  }, [
+    bulbRecords,
+    wireA,
+    wireB,
+  ]);
+
+  const socketLeads = useMemo<SocketLeadDatum[]>(() => {
+    const joinDepth = socketWireJoinDepth(structural.BULB_SCALE, separationCompensation);
+    const leadTSpan = Math.min(
+      SOCKET_LEAD_T_SPAN_MAX,
+      Math.max(0.004, SOCKET_LEAD_T_SPAN_FACTOR / Math.max(1, locations.length)),
+    );
+    const socketHalfWidth = SOCKET_LEAD_SOCKET_HALF_WIDTH * structural.BULB_SCALE;
+    const tangentBend = Math.max(0.035, structural.BULB_SCALE * 0.08 + wireSeparation * 0.45);
+    const socketBend = Math.max(0.04, structural.BULB_SCALE * 0.16);
+    const surfaceExit = Math.max(0.004, structural.WIRE_THICKNESS * SOCKET_LEAD_SURFACE_EXIT_SCALE);
+    const depthClearance = SOCKET_LEAD_Z_CLEARANCE * structural.BULB_SCALE;
+    const socketDepthOffset = (
+      BILLBOARD_OFFSETS.socket.z
+      + billboardDepthBoost(structural.WIRE_THICKNESS, structural.CAMERA_DISTANCE)
+      + SOCKET_LEAD_SOCKET_Z_FRONT * structural.BULB_SCALE
+    );
+    const leadRun = Math.min(
+      Math.max(socketHalfWidth * 1.8, structural.BULB_SCALE * 0.32 + wireSeparation * 0.45),
+      Math.max(socketHalfWidth * 1.6, baseCurve.getLength() * leadTSpan),
+    );
+
+    return renderedBulbRecords.flatMap((record) => {
+      const assignedCurve = record.strandId === 0 ? wireA : wireB;
+      const otherCurve = record.strandId === 0 ? wireB : wireA;
+      const otherPoint = otherCurve.getPoint(record.t);
+      const otherWireTowardBulb = otherPoint.sub(record.point).dot(record.directionVector) > 0;
+      const contactSurfaceExit = otherWireTowardBulb
+        ? surfaceExit * SOCKET_LEAD_BLOCKED_SURFACE_EXIT_MULTIPLIER
+        : surfaceExit;
+      const tangent = assignedCurve.getTangent(record.t).normalize();
+      tangent.z = 0;
+      if (tangent.lengthSq() < 0.000001) tangent.set(1, 0, 0);
+      tangent.normalize();
+
+      const leadSpecs = [
+        {
+          sideSign: -1,
+          strandId: record.strandId,
+          color: record.strandId === 0 ? leadTheme.A : leadTheme.B,
+        },
+        {
+          sideSign: 1,
+          strandId: record.strandId,
+          color: record.strandId === 0 ? leadTheme.A : leadTheme.B,
+        },
+      ] as const;
+
+      return leadSpecs.map(({ sideSign, strandId, color }) => {
+        const start = record.point.clone()
+          .addScaledVector(tangent, sideSign * leadRun)
+          .addScaledVector(record.directionVector, contactSurfaceExit * SOCKET_LEAD_START_EMBED_SCALE);
+        const end = record.point.clone()
+          .addScaledVector(record.directionVector, joinDepth)
+          .addScaledVector(tangent, sideSign * socketHalfWidth)
+          .addScaledVector(ORTHO_CAMERA_DEPTH_DIRECTION, socketDepthOffset);
+
+        const controlA = start.clone()
+          .addScaledVector(tangent, -sideSign * tangentBend)
+          .addScaledVector(ORTHO_CAMERA_DEPTH_DIRECTION, socketDepthOffset + depthClearance);
+        const controlB = end.clone()
+          .addScaledVector(record.directionVector, -socketBend)
+          .addScaledVector(ORTHO_CAMERA_DEPTH_DIRECTION, depthClearance);
+
+        return {
+          curve: new CubicBezierCurve3(start, controlA, controlB, end),
+          color,
+          strandId,
+        };
+      });
+    });
+  }, [
+    locations.length,
+    baseCurve,
+    renderedBulbRecords,
+    separationCompensation,
+    structural.BULB_SCALE,
+    structural.CAMERA_DISTANCE,
+    structural.WIRE_THICKNESS,
+    wireSeparation,
+    wireA,
+    wireB,
+    leadTheme.A,
+    leadTheme.B,
+  ]);
+
+  const bulbData = useMemo(() => (
+    renderedBulbRecords.map((record) => ({
+      baseColorHex: record.baseColorHex,
+      position: [record.point.x, record.point.y, record.point.z] as [number, number, number],
+      direction: record.direction,
+      socketColorHex: record.socketColorHex,
+    }))
+  ), [renderedBulbRecords]);
+
+  const socketLeadGroups = useMemo<SocketLeadGroup[]>(() => {
+    const groups = new Map<string, SocketLeadGroup>();
+    for (const lead of socketLeads) {
+      const key = `${lead.strandId}:${lead.color}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          color: lead.color,
+          strandId: lead.strandId,
+          curves: [],
+        };
+        groups.set(key, group);
+      }
+      group.curves.push(lead.curve);
+    }
+    return Array.from(groups.values());
+  }, [socketLeads]);
 
   const segmentCount = ribbonSegmentCount(wireTwists);
 
@@ -510,6 +663,8 @@ function LightString({
         effectiveTwists={wireTwists}
         twistPhase={0}
         strandId={0}
+        exactColorMode={structural.WIRE_COLOR_OVERRIDE_ENABLED}
+        metalness={wireMetalness}
       />
       <WireRibbon
         color={wireTheme.B}
@@ -518,13 +673,35 @@ function LightString({
         effectiveTwists={wireTwists}
         twistPhase={Math.PI}
         strandId={1}
+        exactColorMode={structural.WIRE_COLOR_OVERRIDE_ENABLED}
+        metalness={wireMetalness}
       />
+      {socketLeadGroups.map((group) => (
+        <BatchedWireRibbon
+          key={`socket-lead-group-${path.id}-${group.strandId}-${group.color}`}
+          color={group.color}
+          curves={group.curves}
+          segments={SOCKET_LEAD_SEGMENTS}
+          effectiveTwists={0}
+          twistPhase={0}
+          strandId={group.strandId}
+          thicknessScale={SOCKET_LEAD_THICKNESS_SCALE}
+          renderOrder={3}
+          exactColorMode={structural.WIRE_COLOR_OVERRIDE_ENABLED}
+          startTaper={SOCKET_LEAD_START_TAPER}
+          taperMinScale={SOCKET_LEAD_TAPER_MIN_SCALE}
+          metalness={wireMetalness}
+          enablePointSpill
+        />
+      ))}
       <BillboardBulbs
         bulbs={bulbData}
         themePalette={activeTheme.bulbs}
-        pointLightsEnabled={structural.POINT_LIGHTS_ENABLED}
+        bulbScale={structural.BULB_SCALE}
         separationCompensation={separationCompensation}
         resetPointSpill={resetPointSpill}
+        exactSocketColorMode={structural.WIRE_COLOR_OVERRIDE_ENABLED}
+        socketMetalness={socketMetalness}
       />
     </>
   );
@@ -549,7 +726,7 @@ function CameraPose() {
     }
 
     _cameraTarget.set(c.CAMERA_X, c.CAMERA_HEIGHT, 0);
-    _cameraEye.copy(_cameraTarget).addScaledVector(CAMERA_FORWARD, -ORTHO_CAMERA_DISTANCE);
+    _cameraEye.copy(_cameraTarget).addScaledVector(ORTHO_CAMERA_FORWARD, -ORTHO_CAMERA_DISTANCE);
     ortho.position.copy(_cameraEye);
     ortho.up.set(0, 1, 0);
     ortho.lookAt(_cameraTarget);
@@ -563,27 +740,31 @@ function getOrthographicCamera(camera: unknown): OrthographicCamera | null {
   return maybe.isOrthographicCamera ? maybe : null;
 }
 
-function computeBloomIntensity(strength: number, intensity: number): number {
-  const raw = Math.max(0, strength) * Math.max(0, intensity);
-  if (raw <= 0) return 0;
-  return BLOOM_INTENSITY_CEILING * (1 - Math.exp(-raw / BLOOM_RESPONSE_CURVE));
-}
-
 function computeBulbDirection(
-  curve: CatmullRomCurve3,
+  curve: Curve<Vector3>,
   t: number,
   point: Vector3,
   target: Vector3,
   guidePoints?: Vector3[],
+  mode: Config['BULB_ORIENTATION_MODE'] = 'LAYOUT',
+  _pathId = 'path',
+  bulbIndex = 0,
 ): [number, number, number] {
   const tangent = curve.getTangent(t).normalize();
   let x = -tangent.y;
   let y = tangent.x;
-  const guide = sampleBulbGuide(t, point, target, guidePoints, _bulbGuide);
 
-  if ((x * guide.x) + (y * guide.y) < 0) {
-    x = -x;
-    y = -y;
+  if (mode === 'NATURAL') {
+    if (bulbIndex % 2 !== 0) {
+      x = -x;
+      y = -y;
+    }
+  } else {
+    const guide = sampleBulbGuide(t, point, target, guidePoints, _bulbGuide);
+    if ((x * guide.x) + (y * guide.y) < 0) {
+      x = -x;
+      y = -y;
+    }
   }
 
   const length = Math.hypot(x, y);
@@ -591,59 +772,167 @@ function computeBulbDirection(
   return [x / length, y / length, 0];
 }
 
-// EffectComposer MUST receive effect children directly (Bloom, ToneMapping,
-// wrapEffect wrappers). Wrapping <Bloom> in a React component made the
-// composer's change-detection JSON.stringify walk into a circular Three.js
-// `parent/children` structure and throw "Converting circular structure to
-// JSON" at @react-three/postprocessing util.tsx:34. PostFX keeps everything
-// flat.
-//
-// Two important constraints this component encodes:
-//   1. We attach a ref to `<EffectComposer>` (which uses forwardRef and is
-//      therefore safe). We do NOT attach a ref to `<Bloom>` — its wrapper
-//      passes the whole props object to JSON.stringify every render, and a
-//      React ref would end up inside there and walk into Three.js circular
-//      refs.
-//   2. Bloom props are kept stable and primitive. Changing any Bloom prop
-//      rebuilds the BloomEffect instance (since the wrapper's useMemo key
-//      is JSON.stringify(props) and it flows through to `args`). So we
-//      update intensity/threshold imperatively in SceneContent's useFrame
-//      via the composer-pass walk, and only BLOOM_RADIUS is React-driven
-//      (radius changes the underlying kernel, which requires a rebuild —
-//      no clean live-resize exposed — and users rarely touch it).
+function updateWireRibbonMaterial({
+  material,
+  config,
+  displayThickness,
+  thicknessScale,
+  effectiveTwists,
+  exactColorMode,
+  startTaper,
+  endTaper,
+  taperMinScale,
+  metalness,
+  enablePointSpill,
+}: {
+  material: ShaderMaterial;
+  config: Config;
+  displayThickness: number;
+  thicknessScale: number;
+  effectiveTwists: number;
+  exactColorMode: boolean;
+  startTaper: number;
+  endTaper: number;
+  taperMinScale: number;
+  metalness: number;
+  enablePointSpill: boolean;
+}) {
+  const u = material.uniforms;
+  if (u.uTwists) u.uTwists.value = effectiveTwists;
+  if (u.uAmbient) u.uAmbient.value = config.AMBIENT_INTENSITY;
+  if (u.uFrontShadowStrength) u.uFrontShadowStrength.value = effectiveTwists <= 0 ? 0 : 0.2;
+  if (u.uColorFloor) u.uColorFloor.value = metalness > 0 ? 0.2 : 0.16;
+  if (u.uExactColorMode) u.uExactColorMode.value = exactColorMode ? 1 : 0;
+  if (u.uStartTaper) u.uStartTaper.value = startTaper;
+  if (u.uEndTaper) u.uEndTaper.value = endTaper;
+  if (u.uTaperMinScale) u.uTaperMinScale.value = taperMinScale;
+  if (u.uMetalness) u.uMetalness.value = metalness;
+  if (u.uThickness) u.uThickness.value = displayThickness;
+  if (u.uWeaveDepth) {
+    u.uWeaveDepth.value = Math.max(0.05 * thicknessScale, displayThickness * 1.85);
+  }
+  if (u.uCollisionSpread) {
+    u.uCollisionSpread.value = Math.max(0.002 * thicknessScale, displayThickness * 0.12);
+  }
+  material.polygonOffsetFactor = 0;
+  material.polygonOffsetUnits = 0;
+
+  if (enablePointSpill) {
+    const n = Math.min(POINT_SPILL_MAX, pointSpillCount);
+    if (u.uPCount) (u.uPCount as { value: number }).value = n;
+    const pointPositions = u.uPPos as { value: Vector3[] } | undefined;
+    const pointColors = u.uPCol as { value: Color[] } | undefined;
+    for (let i = 0; i < POINT_SPILL_MAX; i++) {
+      const pointPosition = pointPositions?.value[i];
+      const pointColor = pointColors?.value[i];
+      if (pointPosition && pointColor) {
+        pointPosition.copy(pointSpillPos[i]!);
+        pointColor.copy(pointSpillCol[i]!);
+      }
+    }
+  }
+}
+
 function PostFX({
   antialiased,
   backgroundEnabled,
-  composerRef,
 }: {
   antialiased: boolean;
   backgroundEnabled: boolean;
-  composerRef: React.RefObject<EffectComposerImpl | null>;
 }) {
-  const bloomRadius = useConfigStore((s) => s.config.BLOOM_RADIUS);
   return (
-    <EffectComposer
-      ref={composerRef}
-      multisampling={antialiased ? 8 : 0}
-      frameBufferType={HalfFloatType}
-    >
-      {/* SceneContent useFrame keeps this threshold floored high enough that
-          bright wires/sockets do not drive full-scene bloom. */}
-      <Bloom
-        luminanceThreshold={BLOOM_THRESHOLD_FLOOR}
-        mipmapBlur
-        intensity={POSTPROCESS_BLOOM_SCALE}
-        radius={bloomRadius}
-      />
-      {/* AGX preserves hue at high intensity — ACES Filmic was collapsing
-          saturated emissive bulbs toward white and spreading white through
-          bloom. */}
-      <ToneMapping mode={ToneMappingMode.AGX} />
-      {/* AlphaLift stays mounted and we control it with `strength` instead
-          of conditional mounting, so EffectComposer's child list stays
-          stable. */}
-      <AlphaLift strength={backgroundEnabled ? 0 : 1} />
+    <EffectComposer multisampling={antialiased ? 8 : 0} frameBufferType={HalfFloatType}>
+      <BulbHalo />
+      <AlphaLift strength={1} opaqueFloor={backgroundEnabled ? 1 : 0} />
     </EffectComposer>
+  );
+}
+
+function BatchedWireRibbon({
+  color,
+  curves,
+  segments,
+  effectiveTwists,
+  twistPhase,
+  strandId,
+  thicknessScale = 1,
+  renderOrder,
+  exactColorMode = false,
+  startTaper = 0,
+  endTaper = 0,
+  taperMinScale = 1,
+  metalness = 0,
+  enablePointSpill = false,
+}: {
+  color: number;
+  curves: Curve<Vector3>[];
+  segments: number;
+  effectiveTwists: number;
+  twistPhase: number;
+  strandId: 0 | 1;
+  thicknessScale?: number;
+  renderOrder?: number;
+  exactColorMode?: boolean;
+  startTaper?: number;
+  endTaper?: number;
+  taperMinScale?: number;
+  metalness?: number;
+  enablePointSpill?: boolean;
+}) {
+  const meshRef = useRef<Mesh>(null);
+  const buffers = useMemo(
+    () => allocateBatchedRibbonBuffers(curves.length, segments),
+    [curves.length, segments],
+  );
+  const material = useMemo<ShaderMaterial>(
+    () => createWireMaterial(color, twistPhase, strandId, { pointSpill: enablePointSpill }),
+    [color, twistPhase, strandId, enablePointSpill],
+  );
+
+  useEffect(() => {
+    if (curves.length > 0) writeBatchedRibbonPositions(buffers, curves);
+  }, [buffers, curves]);
+
+  useEffect(() => {
+    const geometry = buffers.geometry;
+    return () => {
+      geometry.dispose();
+    };
+  }, [buffers]);
+
+  useEffect(() => {
+    return () => {
+      material.dispose();
+    };
+  }, [material]);
+
+  useFrame(() => {
+    const c = useConfigStore.getState().config;
+    const wire = resolveWireGeometry(c);
+    updateWireRibbonMaterial({
+      material,
+      config: c,
+      displayThickness: wire.WIRE_THICKNESS * thicknessScale,
+      thicknessScale,
+      effectiveTwists,
+      exactColorMode,
+      startTaper,
+      endTaper,
+      taperMinScale,
+      metalness,
+      enablePointSpill,
+    });
+  }, 1);
+
+  if (curves.length === 0) return null;
+
+  return (
+    <mesh
+      ref={meshRef}
+      geometry={buffers.geometry}
+      material={material}
+      renderOrder={renderOrder ?? 1 + strandId}
+    />
   );
 }
 
@@ -654,22 +943,36 @@ function WireRibbon({
   effectiveTwists,
   twistPhase,
   strandId,
+  thicknessScale = 1,
+  renderOrder,
+  exactColorMode = false,
+  startTaper = 0,
+  endTaper = 0,
+  taperMinScale = 1,
+  metalness = 0,
+  enablePointSpill = true,
 }: {
   color: number;
-  curve: TwistedCurve;
+  curve: Curve<Vector3>;
   segments: number;
   effectiveTwists: number;
   twistPhase: number;
   strandId: 0 | 1;
+  thicknessScale?: number;
+  renderOrder?: number;
+  exactColorMode?: boolean;
+  startTaper?: number;
+  endTaper?: number;
+  taperMinScale?: number;
+  metalness?: number;
+  enablePointSpill?: boolean;
 }) {
   const meshRef = useRef<Mesh>(null);
   const buffers = useMemo(() => allocateRibbonBuffers(segments), [segments]);
   const material = useMemo<ShaderMaterial>(
-    () => createWireMaterial(color, twistPhase, strandId),
-    [color, twistPhase, strandId],
+    () => createWireMaterial(color, twistPhase, strandId, { pointSpill: enablePointSpill }),
+    [color, twistPhase, strandId, enablePointSpill],
   );
-  const lastConnectZBack = useRef<string | null>(null);
-
   // Positions + tangents are camera-independent — only the shader's
   // extrusion depends on the view. Rewriting them once per curve change is
   // enough; no more per-frame CPU work on these buffers.
@@ -690,73 +993,26 @@ function WireRibbon({
     };
   }, [material]);
 
-  // priority 1: run after default (0) so Billboard point lights are written
-  // to pointSpillState before we read it for the wire reflection term.
-  useFrame((state) => {
+  // priority 1: run after default (0) so virtual bulb spill emitters are
+  // written to pointSpillState before we read them for the reflection term.
+  useFrame(() => {
     const c = useConfigStore.getState().config;
-    const tW = c.WIRE_THICKNESS;
-    // Zoomed out = worse depth; scale tuck and socket alignment with camera distance.
-    const distScale = 1.0 + 0.055 * Math.max(0, c.CAMERA_DISTANCE - 9);
-    const rawZBack = (0.04 + 0.3 * Math.min(1.75, 0.03 / (tW + 0.006))) * distScale;
-    const zBack = Math.min(rawZBack, socketJoinZBackLimit(c.BULB_SCALE));
-    const zKey = `${zBack.toFixed(6)}|${distScale.toFixed(3)}|${c.BULB_SCALE.toFixed(4)}`;
-    if (lastConnectZBack.current !== zKey) {
-      lastConnectZBack.current = zKey;
-      curve.connectZBack = zBack;
-      writeRibbonPositions(buffers, curve);
-    }
+    const tW = resolveWireGeometry(c).WIRE_THICKNESS;
+    const displayThickness = tW * thicknessScale;
 
-    const u = material.uniforms;
-    if (u.uTwists) u.uTwists.value = effectiveTwists;
-    if (u.uAmbient) u.uAmbient.value = c.AMBIENT_INTENSITY;
-    if (u.uThickness) u.uThickness.value = c.WIRE_THICKNESS;
-    if (u.uWeaveDepth) {
-      u.uWeaveDepth.value = Math.max(0.05, tW * 1.85);
-    }
-    if (u.uCollisionSpread) {
-      u.uCollisionSpread.value = Math.max(0.002, tW * 0.12);
-    }
-    if (u.uPerTwistDepth) {
-      u.uPerTwistDepth.value = Math.min(
-        0.07,
-        0.012 + 0.05 * Math.min(2.5, 0.034 / (tW + 0.011)),
-      );
-    }
-    material.polygonOffsetFactor = 0;
-    material.polygonOffsetUnits = 0;
-
-    const scene = state.scene;
-    const keyL = scene.getObjectByName('melt-key') as DirectionalLight | null;
-    if (keyL && u.uKeyL && u.uKeyI) {
-      keyL.getWorldDirection(_K_LIGHT_TO);
-      _K_LIGHT_TO.negate();
-      (u.uKeyL as { value: Vector3 }).value.copy(_K_LIGHT_TO);
-      (u.uKeyI as { value: number }).value = c.KEY_LIGHT_INTENSITY;
-    }
-    const fillL = scene.getObjectByName('melt-fill') as DirectionalLight | null;
-    if (fillL && u.uFillL && u.uFillI) {
-      fillL.getWorldDirection(_F_LIGHT_TO);
-      _F_LIGHT_TO.negate();
-      (u.uFillL as { value: Vector3 }).value.copy(_F_LIGHT_TO);
-      (u.uFillI as { value: number }).value = c.FILL_LIGHT_INTENSITY;
-    }
-    const hemiL = scene.getObjectByName('melt-hemi') as HemisphereLight | null;
-    if (hemiL && u.uHemiI && u.uHemiSky && u.uHemignd) {
-      (u.uHemiI as { value: number }).value = c.HEMI_LIGHT_INTENSITY;
-      (u.uHemiSky as { value: Color }).value.copy(hemiL.color);
-      (u.uHemignd as { value: Color }).value.copy(hemiL.groundColor);
-    }
-
-    const n = Math.min(8, pointSpillCount);
-    if (u.uPCount) (u.uPCount as { value: number }).value = n;
-    for (let i = 0; i < 8; i++) {
-      const pU = u[`uPPos${i}` as 'uPPos0'];
-      const cU = u[`uPCol${i}` as 'uPCol0'];
-      if (pU && cU) {
-        (pU as { value: Vector3 }).value.copy(pointSpillPos[i]!);
-        (cU as { value: Color }).value.copy(pointSpillCol[i]!);
-      }
-    }
+    updateWireRibbonMaterial({
+      material,
+      config: c,
+      displayThickness,
+      thicknessScale,
+      effectiveTwists,
+      exactColorMode,
+      startTaper,
+      endTaper,
+      taperMinScale,
+      metalness,
+      enablePointSpill,
+    });
   }, 1);
 
   // Strands: stable draw order. Secondary strand draws after; pairs with
@@ -766,7 +1022,7 @@ function WireRibbon({
       ref={meshRef}
       geometry={buffers.geometry}
       material={material}
-      renderOrder={1 + strandId}
+      renderOrder={renderOrder ?? 1 + strandId}
     />
   );
 }

@@ -6,6 +6,7 @@ import {
   configSchema,
   type Config,
   type ConfigPatch,
+  applyLayoutGuardrails,
   applyWireGuardrails,
   withLayoutCameraDefaults,
   withWireGuardrails,
@@ -30,7 +31,7 @@ export async function initConfigStore(): Promise<void> {
       const raw = await readFile(CONFIG_PATH, 'utf8');
       const parsed = configSchema.safeParse(JSON.parse(raw));
       if (parsed.success) {
-        current = applyWireGuardrails(parsed.data);
+        current = applyWireGuardrails(applyLayoutGuardrails(parsed.data));
         console.log('[config] loaded from disk');
       } else {
         console.warn('[config] invalid config.json — using defaults', parsed.error.flatten());
@@ -53,7 +54,7 @@ export function applyPatch(patch: ConfigPatch, source: string = 'api'): Config {
     withLayoutCameraDefaults(patch, current),
     current,
   );
-  current = { ...current, ...expandedPatch };
+  current = applyWireGuardrails(applyLayoutGuardrails({ ...current, ...expandedPatch }));
   scheduleSave();
   for (const listener of listeners) listener(expandedPatch, source);
   return current;

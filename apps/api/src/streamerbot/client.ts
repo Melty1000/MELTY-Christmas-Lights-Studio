@@ -10,8 +10,8 @@ let client: StreamerbotClient | null = null;
 let connected = false;
 
 export function initStreamerbotClient(): void {
-  if (process.env.DISABLE_STREAMERBOT === '1') {
-    console.log('[streamerbot] disabled via DISABLE_STREAMERBOT=1');
+  if (process.env.ENABLE_STREAMERBOT !== '1' || process.env.DISABLE_STREAMERBOT === '1') {
+    console.log('[streamerbot] disabled. Set ENABLE_STREAMERBOT=1 to enable it.');
     broadcast({ type: 'streamerbot:status', connected: false, url: SB_URL });
     return;
   }

@@ -6,26 +6,39 @@ import {
   DoubleSide,
   DynamicDrawUsage,
   type Camera,
+  type Group,
   InstancedBufferAttribute,
   InstancedMesh,
   Object3D,
   PlaneGeometry,
-  PointLight,
   ShaderMaterial,
   Shape,
   ShapeGeometry,
   Vector3,
 } from 'three';
 import { createBulbAnimationState, stepBulbAnimation, type BulbAnimationState } from './animation.ts';
-import { beginPointSpillFrame, pushPointSpill } from './wire/pointSpillState.ts';
+import {
+  beginPointSpillFrame,
+  POINT_SPILL_MAX,
+  pointSpillCol,
+  pointSpillCount,
+  pointSpillPos,
+  pushPointSpill,
+} from './wire/pointSpillState.ts';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 import { getBulbPalette } from './utils.ts';
 import {
   BILLBOARD_OFFSETS,
+  billboardDepthBoost,
+  GLASS_SOCKET_OCCLUSION_Y,
   SEPARATION_COMPENSATION_SCALE,
   SOCKET_SHAPE_TOP_Y,
   type BillboardInstanceOffset,
 } from './bulbMetrics.ts';
+import { beginBulbHaloFrame, pushBulbHalo } from './effects/bulbHaloState.ts';
+import { BULB_PROFILE, createBulbGlassShape } from './bulbProfile.ts';
+import { resolveWireGeometry } from '@melty/shared';
+import { computeBillboardHaloIntensity } from './billboardHaloMath.ts';
 
 export interface BillboardBulbDatum {
   baseColorHex: number;
@@ -37,14 +50,17 @@ export interface BillboardBulbDatum {
 interface BillboardBulbsProps {
   bulbs: BillboardBulbDatum[];
   themePalette: number[];
-  // POINT_LIGHTS_ENABLED is structural — it decides whether the pointLight
-  // subtree is mounted at all. All other config values (BULB_SCALE,
-  // GLASS_OPACITY, EMISSIVE_INTENSITY, AMBIENT_INTENSITY, animation params)
+  // Bulb scale is structural because wire dips/socket leads are built around
+  // it, so BillboardBulbs receives the same scale snapshot from Scene. Other
+  // config values (glass opacity,
+  // GLASS_OPACITY, BULB_INTERNAL_GLOW, AMBIENT_INTENSITY, animation params)
   // are read imperatively each frame via useConfigStore.getState() so that
   // dragging those sliders doesn't cause any React reconciliation here.
-  pointLightsEnabled: boolean;
+  bulbScale: number;
   separationCompensation: number;
   resetPointSpill?: boolean;
+  exactSocketColorMode?: boolean;
+  socketMetalness?: number;
 }
 
 interface BillboardGeometries {
@@ -58,81 +74,108 @@ const _glassDummy = new Object3D();
 const _filamentDummy = new Object3D();
 const _socketDummy = new Object3D();
 const _haloDummy = new Object3D();
-const _depthOri = new Object3D();
+const _haloProjectionDummy = new Object3D();
 const _lookAtTarget = new Vector3();
-const _offsetVec = new Vector3();
 const _assemblyDepthWorld = new Vector3();
-const _pointLightWorld = new Vector3();
+const _instanceDepthWorld = new Vector3();
+const _pointSpillWorld = new Vector3();
+const _haloCenterWorld = new Vector3();
+const _haloEdgeWorld = new Vector3();
+const _haloTipWorld = new Vector3();
+const _haloNeckWorld = new Vector3();
+const _haloCenterScreen = new Vector3();
+const _haloEdgeScreen = new Vector3();
+const _haloTipScreen = new Vector3();
+const _haloNeckScreen = new Vector3();
 const _animatedColor = new Color();
 const _haloColor = new Color();
 const _socketColor = new Color();
 const _filamentColor = new Color();
 
+const SOCKET_POINT_SPILL_ACCUMULATION = Array.from(
+  { length: POINT_SPILL_MAX },
+  (_, index) => (
+    `pAcc += step(${(index + 0.5).toFixed(1)}, uPCount) * socketPointTerm(vWorldPos, uPPos[${index}], uPCol[${index}], spillFacing);`
+  ),
+).join('\n          ');
+
 // ---------------------------------------------------------------------------
-// "Reflections" (per-bulb point lights)
+// "Reflections" (virtual per-bulb spill)
 // ---------------------------------------------------------------------------
-// In the legacy app this feature was labeled "Reflections" in the UI — the
-// POINT_LIGHTS_ENABLED toggle drives colored per-bulb point lights that spill
-// onto the wire: Three.js point lights plus a matching hand-written spill
-// in `createWireMaterial` (ShaderMaterial). Billboards are custom shaders too.
+// Colored per-bulb spill onto the wire and sockets is always available through
+// the hand-written shader spill in `createWireMaterial`.
+// Billboards are custom shaders too.
 // Tuning notes below reflect the constraints of this scene specifically — not
 // generic point light physics.
 
-// Three.js compiles point lights into the shader program at the declared
-// maximum count, and large counts blow out uniform budgets / mobile tiled
-// renderers. 80 is a safe cap that still gives dense strands noticeable spill.
+// Virtual emitter cap. 80 is a safe cap that still gives dense strands
+// noticeable spill without making the wire/socket shaders evaluate every bulb.
 const MAX_POINT_LIGHTS = 80;
 
-// Three.js has been physically-correct-by-default since r155 (intensity is in
-// candela). A Christmas-bulb-sized emitter at ~0.2m glass reads around
-// 30-40cd. We then multiply by per-bulb animation.intensity (0..1) so dim
-// bulbs cast less spill. Anything much higher blows the bloom threshold and
-// the wire turns into a solid glowing sausage.
+// Multiplied by per-bulb animation.intensity (0..1) so dim bulbs cast less
+// spill. Anything much higher turns the wire into a solid glowing sausage.
 const POINT_LIGHT_INTENSITY = 32;
 
-// Distance is a hard cutoff — we want each bulb's spill to land on the wire
-// section immediately around it but NOT reach past the neighboring bulb (or
-// the wire becomes a uniform smear with no color separation). With ~0.6 world
-// units between bulbs, 0.9 lets neighbors overlap slightly without washing.
-const POINT_LIGHT_DISTANCE = 0.9;
-const POINT_LIGHT_DECAY = 2;
-
 // Vertical offset from the bulb's attachment point (socket/wire junction) up
-// into the glass body. Placing the light here, rather than at the exact wire
-// position, pushes the brightest spill DOWN onto the wire so the effect is
-// visible from the usual viewing angle instead of being hidden inside the
-// wire geometry. ~0.3 in legacy local space; here we scale with BULB_SCALE.
+// into the glass body. Placing the virtual emitter here, rather than at the
+// exact wire position, pushes the brightest spill DOWN onto the wire so the
+// effect is visible from the usual viewing angle instead of being hidden
+// inside the wire geometry. ~0.3 in legacy local space; here we scale with
+// BULB_SCALE.
 const POINT_LIGHT_VERTICAL_OFFSET = 0.3;
 
 const HALO_CENTER_OFFSET_Y = -2.7;
 const HALO_DEPTH_OFFSET = -0.16;
 const HALO_BASE_SCALE = 4.5;
 const HALO_RADIUS_SCALE = 12.0;
-const HALO_MAX_INTENSITY = 1.15;
-const HALO_INTENSITY_FLOOR = 0.32;
-const HALO_RESPONSE_CURVE = 3.2;
-const BULB_OFF_INTENSITY_EPSILON = 0.001;
+const BULB_LIGHT_DEADZONE = 0.0005;
+const BULB_LIGHT_FADE_KNEE = 0.08;
+const MAX_BULB_HALOS = 96;
 
 export function BillboardBulbs({
   bulbs,
   themePalette,
-  pointLightsEnabled,
+  bulbScale,
   separationCompensation,
   resetPointSpill = true,
+  exactSocketColorMode = false,
+  socketMetalness = 0,
 }: BillboardBulbsProps) {
+  const groupRef = useRef<Group>(null);
   const glassRef = useRef<InstancedMesh>(null);
   const filamentRef = useRef<InstancedMesh>(null);
   const socketRef = useRef<InstancedMesh>(null);
   const haloRef = useRef<InstancedMesh>(null);
   const animationStatesRef = useRef<BulbAnimationState[]>([]);
-  const pointLightRefs = useRef<Array<PointLight | null>>([]);
   const geometries = useMemo(createBillboardGeometries, []);
   const glassMaterial = useMemo(createGlassMaterial, []);
   const filamentMaterial = useMemo(createFilamentMaterial, []);
   const socketMaterial = useMemo(createSocketMaterial, []);
   const haloMaterial = useMemo(createHaloMaterial, []);
 
-  const pointLightCount = pointLightsEnabled ? Math.min(bulbs.length, MAX_POINT_LIGHTS) : 0;
+  const virtualSpillCount = Math.min(bulbs.length, MAX_POINT_LIGHTS);
+  const spillBulbIndexes = useMemo(
+    () => buildSpillBulbIndexes(bulbs.length, virtualSpillCount),
+    [bulbs.length, virtualSpillCount],
+  );
+  const haloBulbIndexes = useMemo(
+    () => buildSpillBulbIndexes(bulbs.length, Math.min(bulbs.length, MAX_BULB_HALOS)),
+    [bulbs.length],
+  );
+  const spillSlotByBulbIndex = useMemo(() => {
+    const slots = new Array<number>(bulbs.length).fill(-1);
+    spillBulbIndexes.forEach((bulbIndex, slot) => {
+      slots[bulbIndex] = slot;
+    });
+    return slots;
+  }, [bulbs.length, spillBulbIndexes]);
+  const haloSlotByBulbIndex = useMemo(() => {
+    const slots = new Array<number>(bulbs.length).fill(-1);
+    haloBulbIndexes.forEach((bulbIndex, slot) => {
+      slots[bulbIndex] = slot;
+    });
+    return slots;
+  }, [bulbs.length, haloBulbIndexes]);
 
   useEffect(() => {
     animationStatesRef.current = bulbs.map((_, index) => animationStatesRef.current[index] ?? createBulbAnimationState(index));
@@ -168,18 +211,23 @@ export function BillboardBulbs({
   }, [bulbs.length]);
 
   useFrame(({ camera, clock }, delta) => {
+    const group = groupRef.current;
     const glass = glassRef.current;
     const filament = filamentRef.current;
     const socket = socketRef.current;
     const halo = haloRef.current;
-    if (!glass || !filament || !socket || !halo) return;
+    if (!group || !glass || !filament || !socket || !halo) return;
+    group.updateWorldMatrix(true, false);
 
     // Pull the live config every frame. Zero React overhead — this is just
     // a ref read, so every continuous slider (bulb scale, emissive, glass
     // opacity, ambient, animation speeds/styles) updates on the next GL
     // frame without re-rendering the scene graph.
     const config = useConfigStore.getState().config;
-    if (resetPointSpill) beginPointSpillFrame();
+    if (resetPointSpill) {
+      beginPointSpillFrame();
+      beginBulbHaloFrame();
+    }
 
     const glassColorAttr = glass.geometry.getAttribute('instanceColor') as
       | InstancedBufferAttribute
@@ -219,24 +267,16 @@ export function BillboardBulbs({
       return;
     }
 
-    const tWire = config.WIRE_THICKNESS;
+    const tWire = resolveWireGeometry(config).WIRE_THICKNESS;
     // Same camera-space +Z (billboard "depth") for glass, filament, socket, lights.
     // Thinner ribbon and zoomed-out camera: push the cap stack toward the lens
     // so dips stay behind the gold shell (log-Z precision + parallax both hurt).
-    const inv = 0.03 / (tWire + 0.0055);
-    const distScale = 1.0 + 0.07 * Math.max(0, config.CAMERA_DISTANCE - 8);
-    const zBoost = Math.min(
-      0.4,
-      (0.02 + 0.2 * Math.min(2.2, inv) + 0.08 * Math.min(1, inv * inv * 0.04)) * distScale,
-    );
+    const zBoost = billboardDepthBoost(tWire, config.CAMERA_DISTANCE);
 
     const elapsed = clock.getElapsedTime();
-    const haloStrength = config.POSTFX_ENABLED
-      ? computeHaloStrength(config.BLOOM_STRENGTH, config.BLOOM_INTENSITY)
-      : 0;
-    const haloScale = config.BULB_SCALE * (HALO_BASE_SCALE + config.BLOOM_RADIUS * HALO_RADIUS_SCALE);
-    const outwardOffset = separationCompensation * SEPARATION_COMPENSATION_SCALE;
-    for (let index = 0; index < bulbs.length; index++) {
+      const haloScale = bulbScale * (HALO_BASE_SCALE + config.HALO_RADIUS * HALO_RADIUS_SCALE);
+      const outwardOffset = separationCompensation * SEPARATION_COMPENSATION_SCALE;
+      for (let index = 0; index < bulbs.length; index++) {
       const bulb = bulbs[index]!;
       const state = animationStatesRef.current[index] ?? createBulbAnimationState(index);
       animationStatesRef.current[index] = state;
@@ -251,18 +291,13 @@ export function BillboardBulbs({
         bulb.baseColorHex,
         themePalette,
       );
+      const visibleLightIntensity = computeVisibleBulbLightIntensity(animation.intensity);
 
       const palette = getBulbPalette(animation.colorHex);
       const [x, y, z] = bulb.position;
       const [dirX, dirY] = bulb.direction;
 
-      // Y-locked look-at (cylindrical): reduces edge-of-screen X drift vs full
-      // screen-facing billboards. Depth boost matches this basis per bulb.
-      _lookAtTarget.set(camera.position.x, y, camera.position.z);
-      _depthOri.position.set(x, y, z);
-      _depthOri.lookAt(_lookAtTarget);
-      _assemblyDepthWorld.set(0, 0, zBoost);
-      _assemblyDepthWorld.applyQuaternion(_depthOri.quaternion);
+      getCameraDepthOffset(camera, zBoost, _assemblyDepthWorld);
 
       writeInstance(
         glass,
@@ -272,7 +307,7 @@ export function BillboardBulbs({
         x,
         y,
         z,
-        config.BULB_SCALE,
+        bulbScale,
         { y: BILLBOARD_OFFSETS.glass.y, z: BILLBOARD_OFFSETS.glass.z + zBoost },
         dirX,
         dirY,
@@ -286,7 +321,7 @@ export function BillboardBulbs({
         x,
         y,
         z,
-        config.BULB_SCALE,
+        bulbScale,
         { y: BILLBOARD_OFFSETS.filament.y, z: BILLBOARD_OFFSETS.filament.z + zBoost },
         dirX,
         dirY,
@@ -300,7 +335,7 @@ export function BillboardBulbs({
         x,
         y,
         z,
-        config.BULB_SCALE,
+        bulbScale,
         { y: BILLBOARD_OFFSETS.socket.y, z: BILLBOARD_OFFSETS.socket.z + zBoost },
         dirX,
         dirY,
@@ -316,7 +351,7 @@ export function BillboardBulbs({
         z,
         haloScale,
         { y: HALO_CENTER_OFFSET_Y, z: HALO_DEPTH_OFFSET + zBoost },
-        config.BULB_SCALE,
+        bulbScale,
         dirX,
         dirY,
         outwardOffset,
@@ -336,37 +371,54 @@ export function BillboardBulbs({
 
       socketColorAttr.setXYZ(index, _socketColor.r, _socketColor.g, _socketColor.b);
       haloColorAttr.setXYZ(index, _haloColor.r, _haloColor.g, _haloColor.b);
-      const haloIntensity = animation.intensity <= BULB_OFF_INTENSITY_EPSILON
-        ? 0
-        : HALO_INTENSITY_FLOOR + animation.intensity * (1 - HALO_INTENSITY_FLOOR);
       haloIntensityAttr.setX(
         index,
-        haloStrength * haloIntensity,
+        computeBillboardHaloIntensity(config.HALO_STRENGTH, config.HALO_INTENSITY, visibleLightIntensity),
       );
 
-      // Drive the optional per-bulb point light for colored spill onto the
-      // wire ribbon. Capped earlier via pointLightCount. The light's y is
-      // lifted above the attachment point each frame in case BULB_SCALE
-      // changed — keeps the brightest spill aimed DOWN onto the wire.
-      if (index < pointLightCount) {
-        const light = pointLightRefs.current[index];
-        if (light) {
-          light.color.setHex(animation.colorHex);
-          light.intensity = POINT_LIGHT_INTENSITY * animation.intensity;
-          const lightOutwardOffset = POINT_LIGHT_VERTICAL_OFFSET * config.BULB_SCALE + outwardOffset;
-          const lpx = x + dirX * lightOutwardOffset + _assemblyDepthWorld.x;
-          const lpy = y + dirY * lightOutwardOffset + _assemblyDepthWorld.y;
-          const lpz = z + _assemblyDepthWorld.z;
-          light.position.set(lpx, lpy, lpz);
-          light.getWorldPosition(_pointLightWorld);
-          pushPointSpill(
-            _pointLightWorld.x,
-            _pointLightWorld.y,
-            _pointLightWorld.z,
-            animation.colorHex,
-            POINT_LIGHT_INTENSITY * animation.intensity,
-          );
-        }
+      const haloSlot = haloSlotByBulbIndex[index] ?? -1;
+      if (haloSlot >= 0) {
+        pushScreenSpaceBulbHalo({
+          camera,
+          group,
+          x,
+          y,
+          z,
+          scale: bulbScale,
+          zBoost,
+          directionX: dirX,
+          directionY: dirY,
+          outwardOffset,
+          colorHex: animation.colorHex,
+          visibleLightIntensity,
+          sourceIntensity: config.HALO_SOURCE_INTENSITY,
+        });
+      }
+
+      // Drive the optional virtual spill budget for colored reflections onto
+      // wire/socket shaders. When the strand has more bulbs than the spill cap,
+      // sampled emitters are distributed across the whole strand instead of
+      // clumping at the first/left side.
+      const spillSlot = spillSlotByBulbIndex[index] ?? -1;
+      if (spillSlot >= 0) {
+        const pointIntensity = POINT_LIGHT_INTENSITY
+          * visibleLightIntensity
+          * Math.max(0, config.REFLECTION_INTENSITY);
+        const lightOutwardOffset = POINT_LIGHT_VERTICAL_OFFSET * bulbScale + outwardOffset;
+        _pointSpillWorld
+          .set(
+            x + dirX * lightOutwardOffset + _assemblyDepthWorld.x,
+            y + dirY * lightOutwardOffset + _assemblyDepthWorld.y,
+            z + _assemblyDepthWorld.z,
+          )
+          .applyMatrix4(group.matrixWorld);
+        pushPointSpill(
+          _pointSpillWorld.x,
+          _pointSpillWorld.y,
+          _pointSpillWorld.z,
+          animation.colorHex,
+          pointIntensity,
+        );
       }
     }
 
@@ -383,10 +435,25 @@ export function BillboardBulbs({
     haloIntensityAttr.needsUpdate = true;
 
     (glassMaterial.uniforms.baseOpacity!).value = config.GLASS_OPACITY;
-    (glassMaterial.uniforms.baseEmissiveIntensity!).value = config.EMISSIVE_INTENSITY;
+    (glassMaterial.uniforms.baseEmissiveIntensity!).value = config.BULB_INTERNAL_GLOW;
     (glassMaterial.uniforms.uAmbient!).value = config.AMBIENT_INTENSITY;
     (glassMaterial.uniforms.uGlassRoughness!).value = config.GLASS_ROUGHNESS;
+    (filamentMaterial.uniforms.baseEmissiveIntensity!).value = config.BULB_INTERNAL_GLOW;
     (socketMaterial.uniforms.uAmbient!).value = config.AMBIENT_INTENSITY;
+    (socketMaterial.uniforms.uExactColorMode!).value = exactSocketColorMode ? 1 : 0;
+    (socketMaterial.uniforms.uMetalness!).value = socketMetalness;
+    const socketPointCount = Math.min(POINT_SPILL_MAX, pointSpillCount);
+    (socketMaterial.uniforms.uPCount as { value: number }).value = socketPointCount;
+    const socketPointPositions = socketMaterial.uniforms.uPPos as { value: Vector3[] } | undefined;
+    const socketPointColors = socketMaterial.uniforms.uPCol as { value: Color[] } | undefined;
+    for (let i = 0; i < POINT_SPILL_MAX; i++) {
+      const pointPosition = socketPointPositions?.value[i];
+      const pointColor = socketPointColors?.value[i];
+      if (pointPosition && pointColor) {
+        pointPosition.copy(pointSpillPos[i]!);
+        pointColor.copy(pointSpillCol[i]!);
+      }
+    }
   });
 
   useEffect(() => {
@@ -403,67 +470,38 @@ export function BillboardBulbs({
   }, [filamentMaterial, geometries, glassMaterial, haloMaterial, socketMaterial]);
 
   return (
-    <group>
+    <group ref={groupRef}>
       <instancedMesh ref={socketRef} args={[geometries.socket, socketMaterial, bulbs.length]} renderOrder={0} />
       <instancedMesh ref={haloRef} args={[geometries.halo, haloMaterial, bulbs.length]} renderOrder={4} />
       <instancedMesh ref={glassRef} args={[geometries.glass, glassMaterial, bulbs.length]} renderOrder={10} />
       <instancedMesh ref={filamentRef} args={[geometries.filament, filamentMaterial, bulbs.length]} renderOrder={11} />
-      {pointLightCount > 0 ? (
-        <PointLightStrand
-          bulbs={bulbs}
-          pointLightCount={pointLightCount}
-          pointLightRefs={pointLightRefs}
-          separationCompensation={separationCompensation}
-        />
-      ) : null}
     </group>
   );
 }
 
-// Point-light strand is extracted so it can be memoized on just `bulbs` and
-// `pointLightCount`. BillboardBulbs itself rerenders only when structural
-// fields change (which is rare), so in practice this memo mostly guards
-// against strand count / bulb-array changes rather than continuous sliders.
-const PointLightStrand = ({
-  bulbs,
-  pointLightCount,
-  pointLightRefs,
-  separationCompensation,
-}: {
-  bulbs: BillboardBulbDatum[];
-  pointLightCount: number;
-  pointLightRefs: React.MutableRefObject<Array<PointLight | null>>;
-  separationCompensation: number;
-}) => {
-  // Seed Y with current BULB_SCALE so the very first frame (before useFrame
-  // runs) doesn't render the lights sunk into the wire.
-  const initialScale = useConfigStore.getState().config.BULB_SCALE;
-  const initialOutwardOffset = (
-    POINT_LIGHT_VERTICAL_OFFSET * initialScale
-    + separationCompensation * SEPARATION_COMPENSATION_SCALE
-  );
-  return (
-    <>
-      {bulbs.slice(0, pointLightCount).map((bulb, index) => (
-        <pointLight
-          key={`pl-${index}`}
-          ref={(light) => {
-            pointLightRefs.current[index] = light;
-          }}
-          position={[
-            bulb.position[0] + bulb.direction[0] * initialOutwardOffset,
-            bulb.position[1] + bulb.direction[1] * initialOutwardOffset,
-            bulb.position[2],
-          ]}
-          distance={POINT_LIGHT_DISTANCE}
-          decay={POINT_LIGHT_DECAY}
-          intensity={0}
-          color={bulb.baseColorHex}
-        />
-      ))}
-    </>
-  );
-};
+function buildSpillBulbIndexes(totalBulbs: number, spillCount: number): number[] {
+  if (totalBulbs <= 0 || spillCount <= 0) return [];
+  if (spillCount >= totalBulbs) {
+    return Array.from({ length: totalBulbs }, (_, index) => index);
+  }
+  if (spillCount === 1) {
+    return [Math.floor((totalBulbs - 1) / 2)];
+  }
+
+  const indexes: number[] = [];
+  const used = new Set<number>();
+  const step = (totalBulbs - 1) / (spillCount - 1);
+  for (let slot = 0; slot < spillCount; slot++) {
+    let index = Math.round(slot * step);
+    while (used.has(index) && index < totalBulbs - 1) index++;
+    while (used.has(index) && index > 0) index--;
+    if (!used.has(index)) {
+      used.add(index);
+      indexes.push(index);
+    }
+  }
+  return indexes;
+}
 
 function writeInstance(
   mesh: InstancedMesh,
@@ -486,12 +524,15 @@ function writeInstance(
   dummy.scale.setScalar(scale);
   dummy.lookAt(_lookAtTarget);
   dummy.rotateZ(Math.atan2(directionX, -directionY));
-  _offsetVec.set(0, offset.y * scale, offset.z);
-  _offsetVec.applyQuaternion(dummy.quaternion);
+  // Keep the attachment offset in bulb-direction space, not billboard-camera
+  // space. Otherwise edge-of-screen billboards rotate the local Y offset into
+  // X and the socket drifts away from the lead endpoint.
+  const alongBulb = -offset.y * scale + outwardOffset;
+  const depthOffset = getCameraDepthOffset(camera, offset.z, _instanceDepthWorld);
   dummy.position.set(
-    x + _offsetVec.x + directionX * outwardOffset,
-    y + _offsetVec.y + directionY * outwardOffset,
-    z + _offsetVec.z,
+    x + directionX * alongBulb + depthOffset.x,
+    y + directionY * alongBulb + depthOffset.y,
+    z + depthOffset.z,
   );
   dummy.updateMatrix();
   mesh.setMatrixAt(index, dummy.matrix);
@@ -517,32 +558,131 @@ function writeHaloInstance(
   dummy.scale.setScalar(scale);
   dummy.lookAt(_lookAtTarget);
   dummy.rotateZ(Math.atan2(directionX, -directionY));
-  _offsetVec.set(0, offset.y * bulbScale, offset.z);
-  _offsetVec.applyQuaternion(dummy.quaternion);
+  const alongBulb = -offset.y * bulbScale + outwardOffset;
+  const depthOffset = getCameraDepthOffset(camera, offset.z, _instanceDepthWorld);
   dummy.position.set(
-    x + _offsetVec.x + directionX * outwardOffset,
-    y + _offsetVec.y + directionY * outwardOffset,
-    z + _offsetVec.z,
+    x + directionX * alongBulb + depthOffset.x,
+    y + directionY * alongBulb + depthOffset.y,
+    z + depthOffset.z,
   );
   dummy.updateMatrix();
   mesh.setMatrixAt(index, dummy.matrix);
 }
 
-function computeHaloStrength(strength: number, intensity: number): number {
-  const raw = Math.max(0, strength) * Math.max(0, intensity);
-  if (raw <= 0) return 0;
-  return HALO_MAX_INTENSITY * (1 - Math.exp(-raw / HALO_RESPONSE_CURVE));
+function computeVisibleBulbLightIntensity(intensity: number): number {
+  const clamped = Math.min(1, Math.max(0, intensity));
+  if (clamped <= BULB_LIGHT_DEADZONE) return 0;
+  if (clamped >= BULB_LIGHT_FADE_KNEE) return clamped;
+
+  const t = clamped / BULB_LIGHT_FADE_KNEE;
+  const eased = t * t * (3 - 2 * t);
+  return clamped * eased;
+}
+
+function getCameraDepthOffset(camera: Camera, depth: number, target: Vector3): Vector3 {
+  return camera.getWorldDirection(target).multiplyScalar(-depth);
+}
+
+function pushScreenSpaceBulbHalo({
+  camera,
+  group,
+  x,
+  y,
+  z,
+  scale,
+  zBoost,
+  directionX,
+  directionY,
+  outwardOffset,
+  colorHex,
+  visibleLightIntensity,
+  sourceIntensity,
+}: {
+  camera: Camera;
+  group: Group;
+  x: number;
+  y: number;
+  z: number;
+  scale: number;
+  zBoost: number;
+  directionX: number;
+  directionY: number;
+  outwardOffset: number;
+  colorHex: number;
+  visibleLightIntensity: number;
+  sourceIntensity: number;
+}): void {
+  const source = Math.max(0, Math.min(20, sourceIntensity)) / 20;
+  const intensity = visibleLightIntensity * source;
+  if (intensity <= 0) return;
+
+  _lookAtTarget.set(camera.position.x, y, camera.position.z);
+  _haloProjectionDummy.position.set(x, y, z);
+  _haloProjectionDummy.scale.setScalar(scale);
+  _haloProjectionDummy.lookAt(_lookAtTarget);
+  _haloProjectionDummy.rotateZ(Math.atan2(directionX, -directionY));
+  const glassOriginAlong = -BILLBOARD_OFFSETS.glass.y * scale + outwardOffset;
+  const depthOffset = getCameraDepthOffset(
+    camera,
+    BILLBOARD_OFFSETS.glass.z + zBoost,
+    _instanceDepthWorld,
+  );
+  _haloProjectionDummy.position.set(
+    x + directionX * glassOriginAlong + depthOffset.x,
+    y + directionY * glassOriginAlong + depthOffset.y,
+    z + depthOffset.z,
+  );
+  _haloProjectionDummy.updateMatrix();
+
+  _haloCenterWorld
+    .set(0, BULB_PROFILE.centerY, 0)
+    .applyMatrix4(_haloProjectionDummy.matrix)
+    .applyMatrix4(group.matrixWorld);
+  _haloEdgeWorld
+    .set(BULB_PROFILE.radiusX, BULB_PROFILE.centerY, 0)
+    .applyMatrix4(_haloProjectionDummy.matrix)
+    .applyMatrix4(group.matrixWorld);
+  _haloTipWorld
+    .set(0, BULB_PROFILE.minY, 0)
+    .applyMatrix4(_haloProjectionDummy.matrix)
+    .applyMatrix4(group.matrixWorld);
+  _haloNeckWorld
+    .set(0, GLASS_SOCKET_OCCLUSION_Y, 0)
+    .applyMatrix4(_haloProjectionDummy.matrix)
+    .applyMatrix4(group.matrixWorld);
+
+  _haloCenterScreen.copy(_haloCenterWorld).project(camera);
+  _haloEdgeScreen.copy(_haloEdgeWorld).project(camera);
+  _haloTipScreen.copy(_haloTipWorld).project(camera);
+  _haloNeckScreen.copy(_haloNeckWorld).project(camera);
+
+  if (
+    !isFiniteVector3(_haloCenterScreen)
+    || !isFiniteVector3(_haloEdgeScreen)
+    || !isFiniteVector3(_haloTipScreen)
+    || !isFiniteVector3(_haloNeckScreen)
+  ) {
+    return;
+  }
+
+  const centerUvX = _haloCenterScreen.x * 0.5 + 0.5;
+  const centerUvY = _haloCenterScreen.y * 0.5 + 0.5;
+  const edgeUvX = _haloEdgeScreen.x * 0.5 + 0.5;
+  const edgeUvY = _haloEdgeScreen.y * 0.5 + 0.5;
+  const tipUvX = _haloTipScreen.x * 0.5 + 0.5;
+  const tipUvY = _haloTipScreen.y * 0.5 + 0.5;
+  const neckUvX = _haloNeckScreen.x * 0.5 + 0.5;
+  const neckUvY = _haloNeckScreen.y * 0.5 + 0.5;
+
+  pushBulbHalo(centerUvX, centerUvY, edgeUvX, edgeUvY, tipUvX, tipUvY, neckUvX, neckUvY, colorHex, intensity);
+}
+
+function isFiniteVector3(value: Vector3): boolean {
+  return Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.z);
 }
 
 function createBillboardGeometries(): BillboardGeometries {
-  const glassShape = new Shape();
-  glassShape.moveTo(-0.22, 0);
-  glassShape.bezierCurveTo(-0.45, 0, -0.55, -0.5, -0.55, -0.9);
-  glassShape.bezierCurveTo(-0.55, -1.5, -0.35, -2.2, 0.0, -2.6);
-  glassShape.bezierCurveTo(0.35, -2.2, 0.55, -1.5, 0.55, -0.9);
-  glassShape.bezierCurveTo(0.55, -0.5, 0.45, 0, 0.22, 0);
-  glassShape.lineTo(-0.22, 0);
-  const glass = new ShapeGeometry(glassShape, 12);
+  const glass = new ShapeGeometry(createBulbGlassShape(), 12);
 
   const filamentShape = new Shape();
   const coilWidth = 0.1;
@@ -604,13 +744,13 @@ function createHaloMaterial(): ShaderMaterial {
 
       void main() {
         vec2 p = vUv * 2.0 - 1.0;
-        float d = length(p);
-        float outer = smoothstep(1.0, 0.0, d);
-        float halo = pow(outer, 2.15);
-        float core = exp(-d * d * 8.0);
-        float alpha = (halo * 0.5 + core * 0.24) * vIntensity;
+        float radialDistance = length(p);
+        float outer = smoothstep(1.0, 0.0, radialDistance);
+        float softHalo = pow(outer, 1.85);
+        float core = exp(-radialDistance * radialDistance * 7.0);
+        float alpha = (softHalo * 0.5 + core * 0.18) * vIntensity;
         if (alpha < 0.003) discard;
-        gl_FragColor = vec4(vColor * alpha, alpha);
+        gl_FragColor = vec4(vColor, alpha);
       }
     `,
     transparent: true,
@@ -680,38 +820,61 @@ function createGlassMaterial(): ShaderMaterial {
       }
 
       void main() {
-        vec3 bulbColor = saturateColor(vColor, 1.9);
-        vec2 normalized = vec2(
-          vLocalPos.x / 0.55,
-          (vLocalPos.y + 1.3) / 1.3
+        vec3 bulbColor = saturateColor(vColor, 2.05);
+        vec2 bulbUv = vec2(
+          clamp(vLocalPos.x / 0.55, -1.0, 1.0),
+          clamp((vLocalPos.y + 1.3) / 1.3, -1.0, 1.0)
         );
 
-        float r2 = dot(normalized, normalized);
+        float r2 = dot(bulbUv, bulbUv);
         float domeHeight = 1.0 - r2;
         float z = sqrt(max(0.01, domeHeight));
-        vec3 domeNormal = normalize(vec3(normalized.x * 0.8, normalized.y * 0.8, z));
+        vec3 domeNormal = normalize(vec3(bulbUv.x * 0.82, bulbUv.y * 0.62, z));
 
         float NdotV = max(0.0, dot(domeNormal, vec3(0.0, 0.0, 1.0)));
-        float highlight = pow(NdotV, 1.5);
+        float highlight = pow(NdotV, 1.35);
         float rimPower = 2.0 + uGlassRoughness * 4.0;
-        float rim = pow(1.0 - NdotV, rimPower) * 0.5;
+        float rim = pow(1.0 - NdotV, rimPower);
         float topLight = max(0.0, dot(domeNormal, normalize(vec3(0.0, 0.5, 1.0))));
-        float lighting = uAmbient * 0.3 + topLight * 0.4 + highlight * 0.6;
 
-        float visibleEmission = min(vEmissive * baseEmissiveIntensity, 1.35);
-        vec3 finalColor = bulbColor * (0.28 + lighting * 0.18 + visibleEmission * 0.82);
+        float vertical = bulbUv.y * 0.5 + 0.5;
+        float side = abs(bulbUv.x);
+        float edgeThickness = smoothstep(0.42, 0.98, sqrt(max(r2, 0.0)));
+        float shoulder = smoothstep(0.62, 0.92, vertical) * (1.0 - smoothstep(0.72, 1.0, side));
+        float bottomWeight = smoothstep(0.18, 0.0, vertical);
+        float centerGlow = exp(-(bulbUv.x * bulbUv.x * 3.2 + (bulbUv.y + 0.1) * (bulbUv.y + 0.1) * 1.35));
+        float sideCaustic = exp(-pow(abs(side - 0.42), 2.0) * 42.0) * smoothstep(0.05, 0.5, vertical);
 
-        vec3 specLight = normalize(vec3(0.2, 0.3, 1.0));
+        float lighting = uAmbient * 0.22 + topLight * 0.3 + highlight * 0.34;
+        float internalGlow = clamp(baseEmissiveIntensity / 20.0, 0.0, 5.0);
+        float visibleEmission = vEmissive * internalGlow * 2.0;
+        float bodyLight = 0.16 + lighting * 0.16 + visibleEmission * (0.96 + centerGlow * 0.76);
+        vec3 finalColor = bulbColor * bodyLight;
+
+        finalColor += bulbColor * centerGlow * visibleEmission * 0.38;
+        finalColor += bulbColor * edgeThickness * (0.16 + visibleEmission * 0.2);
+        finalColor += bulbColor * sideCaustic * (0.08 + visibleEmission * 0.14);
+        finalColor -= bulbColor * shoulder * 0.055;
+        finalColor -= bulbColor * bottomWeight * 0.065;
+
+        vec3 specLight = normalize(vec3(-0.25, 0.32, 1.0));
         // Wider highlight when “rough” (higher GLASS_ROUGHNESS), matching the
         // idea of PBR roughness without a full GGX implementation.
-        float specPower = mix(2.0, 56.0, 1.0 - uGlassRoughness);
+        float specPower = mix(4.0, 74.0, 1.0 - uGlassRoughness);
         float specular = pow(max(0.0, dot(domeNormal, specLight)), specPower);
-        float specScale = 0.08 * (1.0 - 0.45 * uGlassRoughness);
-        finalColor += mix(bulbColor, vec3(1.0), 0.04) * specular * specScale;
-        finalColor += bulbColor * rim * 0.2;
-        finalColor = preserveHueCap(finalColor, 1.45);
+        float glint = exp(-pow(bulbUv.x + 0.34, 2.0) * 90.0 - pow(bulbUv.y - 0.35, 2.0) * 22.0);
+        float specScale = 0.1 * (1.0 - 0.55 * uGlassRoughness);
+        finalColor += mix(bulbColor, vec3(1.0), 0.12) * (specular + glint * 0.45) * specScale;
+        finalColor += bulbColor * rim * (0.18 + visibleEmission * 0.1);
+        finalColor = preserveHueCap(finalColor, 10.0);
 
-        gl_FragColor = vec4(finalColor, baseOpacity);
+        float glassAlpha = baseOpacity * (
+          0.58
+          + edgeThickness * 0.28
+          + centerGlow * 0.1
+          + rim * 0.16
+        );
+        gl_FragColor = vec4(finalColor, clamp(glassAlpha, 0.0, baseOpacity));
       }
     `,
     transparent: true,
@@ -757,7 +920,8 @@ function createFilamentMaterial(): ShaderMaterial {
 
       void main() {
         vec3 filamentColor = saturateColor(vColor, 1.8);
-        float visibleEmission = min(vEmissive * baseEmissiveIntensity, 1.6);
+        float internalGlow = pow(clamp(baseEmissiveIntensity / 20.0, 0.0, 1.0), 0.85);
+        float visibleEmission = vEmissive * internalGlow * 1.15;
         gl_FragColor = vec4(preserveHueCap(filamentColor * visibleEmission, 1.6), 1.0);
       }
     `,
@@ -772,6 +936,12 @@ function createSocketMaterial(): ShaderMaterial {
       // Same ambient injection as the glass shader — otherwise the scene
       // ambient slider has no visible effect on sockets.
       uAmbient: { value: 1.0 },
+      uExactColorMode: { value: 0.0 },
+      uMetalness: { value: 0.0 },
+      uPPos: { value: Array.from({ length: POINT_SPILL_MAX }, () => new Vector3()) },
+      uPCol: { value: Array.from({ length: POINT_SPILL_MAX }, () => new Color(0, 0, 0)) },
+      uPCount: { value: 0 },
+      uPointRange: { value: 1.45 },
     },
     vertexShader: `
       attribute vec3 instanceColor;
@@ -779,12 +949,15 @@ function createSocketMaterial(): ShaderMaterial {
       varying vec3 vColor;
       varying vec3 vLocalPos;
       varying vec3 vViewPos;
+      varying vec3 vWorldPos;
 
       void main() {
         vColor = instanceColor;
         vLocalPos = position;
 
+        vec4 worldPosition = modelMatrix * instanceMatrix * vec4(position, 1.0);
         vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        vWorldPos = worldPosition.xyz;
         vViewPos = mvPosition.xyz;
 
         gl_Position = projectionMatrix * mvPosition;
@@ -792,34 +965,104 @@ function createSocketMaterial(): ShaderMaterial {
     `,
     fragmentShader: `
       uniform float uAmbient;
+      uniform float uExactColorMode;
+      uniform float uMetalness;
+      uniform vec3 uPPos[${POINT_SPILL_MAX}];
+      uniform vec3 uPCol[${POINT_SPILL_MAX}];
+      uniform float uPCount;
+      uniform float uPointRange;
 
       varying vec3 vColor;
       varying vec3 vLocalPos;
       varying vec3 vViewPos;
+      varying vec3 vWorldPos;
+
+      float sparkleNoise(vec3 value) {
+        return fract(sin(dot(value, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      }
+
+      float socketBand(float value, float center, float width) {
+        float aa = max(fwidth(value) * 1.4, 0.003);
+        return 1.0 - smoothstep(width - aa, width + aa, abs(value - center));
+      }
+
+      vec3 socketPointTerm(vec3 wpos, vec3 lpos, vec3 lcol, float facing) {
+        vec3 toL = lpos - wpos;
+        float d = length(toL);
+        float range = max(uPointRange, 0.001);
+        float falloff = pow(max(0.0, 1.0 - d / range), 1.55);
+        return lcol * falloff * facing * 0.045;
+      }
 
       void main() {
-        vec2 normalized = vec2(
-          vLocalPos.x / 0.48,
-          (vLocalPos.y - 0.575) / 0.575
+        if (uExactColorMode > 0.5) {
+          gl_FragColor = vec4(vColor, 1.0);
+          return;
+        }
+
+        vec2 socketUv = vec2(
+          clamp(vLocalPos.x / 0.48, -1.0, 1.0),
+          clamp(vLocalPos.y / ${SOCKET_SHAPE_TOP_Y.toFixed(2)}, 0.0, 1.0)
         );
 
-        float r2 = dot(normalized, normalized);
-        float domeHeight = 1.0 - r2;
-        float z = sqrt(max(0.01, domeHeight));
-        vec3 domeNormal = normalize(vec3(normalized.x * 0.6, normalized.y * 0.6, z));
+        float side = abs(socketUv.x);
+        float barrelZ = sqrt(max(0.025, 1.0 - side * side));
+        vec3 socketNormal = normalize(vec3(
+          socketUv.x * 0.88,
+          (socketUv.y - 0.45) * 0.14,
+          barrelZ
+        ));
         vec3 viewDir = normalize(-vViewPos);
 
-        float NdotV = max(0.0, dot(domeNormal, viewDir));
-        float highlight = pow(NdotV, 1.5);
-        float topLight = max(0.0, dot(domeNormal, normalize(vec3(0.0, 0.5, 1.0))));
-        float lighting = uAmbient * 0.4 + topLight * 0.3 + highlight * 0.4;
-        vec3 finalColor = vColor * lighting;
+        float NdotV = max(0.0, dot(socketNormal, viewDir));
+        float faceLight = pow(NdotV, 0.6);
+        float sideRolloff = mix(0.52, 1.0, pow(max(0.0, 1.0 - side), 0.72));
+        float topFalloff = mix(1.0, 0.84, smoothstep(0.78, 1.0, socketUv.y));
+        float bottomFalloff = mix(0.88, 1.0, smoothstep(0.0, 0.18, socketUv.y));
 
-        vec3 reflectDir = reflect(-viewDir, domeNormal);
-        float specular = pow(max(0.0, dot(reflectDir, normalize(vec3(0.2, 0.3, 1.0)))), 6.0);
-        finalColor += vec3(specular * 0.2);
+        float upperLip = socketBand(socketUv.y, 0.88, 0.045);
+        float lowerLip = socketBand(socketUv.y, 0.16, 0.05);
+        float lipMask = (upperLip * 0.8 + lowerLip * 0.65) * (1.0 - side * 0.38);
+        float lipShadow = socketBand(socketUv.y, 0.78, 0.026) * 0.055
+          + socketBand(socketUv.y, 0.24, 0.024) * 0.04;
 
-        gl_FragColor = vec4(finalColor, 1.0);
+        float baseLight = max(0.24, uAmbient * 0.38) + faceLight * 0.48;
+        vec3 finalColor = vColor * baseLight * sideRolloff * topFalloff * bottomFalloff;
+        finalColor += vColor * lipMask * (0.08 + 0.08 * uMetalness);
+        finalColor -= vColor * lipShadow;
+
+        float spillFacing = 0.35 + 0.65 * NdotV;
+        vec3 pAcc = vec3(0.0);
+        ${SOCKET_POINT_SPILL_ACCUMULATION}
+
+        vec3 reflectDir = reflect(-viewDir, socketNormal);
+        float specPower = mix(10.0, 24.0, uMetalness);
+        float specular = pow(max(0.0, dot(reflectDir, normalize(vec3(-0.18, 0.34, 1.0)))), specPower);
+        float spillPeak = max(max(pAcc.r, pAcc.g), pAcc.b);
+        vec3 spillTint = spillPeak <= 0.0001 ? vec3(0.0) : pAcc / spillPeak;
+        vec3 spill = spillTint * (1.0 - exp(-spillPeak * 0.82));
+        float baseLum = dot(vColor, vec3(0.2126, 0.7152, 0.0722));
+        float spillStrength = mix(0.105, 0.265, clamp(baseLum, 0.0, 1.0))
+          * mix(1.0, 1.42, clamp(uMetalness, 0.0, 1.0));
+        vec3 socketSpillWash = spill * spillStrength * (0.54 + faceLight * 0.22);
+        vec3 socketSpillHighlight = spill * (specular * (0.11 + 0.16 * uMetalness) + lipMask * 0.052);
+
+        float materialGrain = sparkleNoise(vec3(vLocalPos.xy * 46.0, dot(vColor, vec3(0.333)))) - 0.5;
+        finalColor *= 1.0 + materialGrain * mix(0.025, 0.07, uMetalness);
+
+        float metalSparkle = 0.0;
+        if (uMetalness > 0.0) {
+          float sparkleSeed = sparkleNoise(vec3(vLocalPos.xy * 38.0, dot(pAcc, vec3(0.33))));
+          float sparkleMask = smoothstep(0.77, 0.98, sparkleSeed);
+          float metalGlint = pow(max(0.0, dot(reflectDir, normalize(vec3(-0.25, 0.45, 1.0)))), 22.0);
+          metalSparkle = sparkleMask * (0.25 + metalGlint) * min(1.0, dot(spill, vec3(0.333)) * 2.5);
+        }
+        vec3 metalTint = mix(spill, spill + vColor * 0.35, 0.45);
+        finalColor += socketSpillWash + socketSpillHighlight;
+        finalColor += metalTint * metalSparkle * 0.42 * uMetalness;
+        finalColor += mix(vColor, vec3(1.0), 0.22 + 0.22 * uMetalness) * specular * (0.035 + 0.12 * uMetalness);
+
+        gl_FragColor = vec4(max(finalColor, vec3(0.01)), 1.0);
       }
     `,
     side: DoubleSide,

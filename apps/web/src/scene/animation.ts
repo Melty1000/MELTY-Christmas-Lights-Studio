@@ -91,7 +91,7 @@ export function stepBulbAnimation(
 
   const smoothing = clamp(delta * (5.5 + twinkleSpeed * 2.4), 0, 1);
   state.currentIntensity += (targetIntensity - state.currentIntensity) * smoothing;
-  if (minI === 0 && targetIntensity < 0.015 && state.currentIntensity < 0.04) {
+  if (minI === 0 && targetIntensity === 0 && state.currentIntensity < 0.0005) {
     state.currentIntensity = 0;
   }
 

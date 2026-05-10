@@ -1,7 +1,7 @@
 import { Color, Vector3 } from 'three';
 
 /** Buffers written by `BillboardBulbs` and read by wire `WireRibbon` the same frame. */
-export const POINT_SPILL_MAX = 8;
+export const POINT_SPILL_MAX = 80;
 
 const poolPos = () => new Vector3();
 const poolCol = () => new Color();

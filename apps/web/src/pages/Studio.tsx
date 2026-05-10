@@ -1,51 +1,53 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useShallow } from 'zustand/react/shallow';
+import clsx from 'clsx';
 import {
   ANIMATION_STYLES,
-  deriveWireFromSimpleControls,
-  LIGHT_LAYOUT_NAMES,
-  rawThicknessToWireWeight,
+  BULB_ORIENTATION_MODE_NAMES,
+  LAYOUT_MODE_NAMES,
+  normalizeLayoutEdges,
   SOCKET_THEME_NAMES,
   THEME_NAMES,
   THEMES,
   WIRE_THEME_NAMES,
-  type LightLayoutName,
+  type BulbOrientationModeName,
+  type LayoutEdgeName,
+  type LayoutModeName,
   type Preset,
-  wireSeparationFromControlValue,
-  wireSeparationToControlValue,
-  wireThicknessFromControlValue,
-  wireTwistIntentFromControlValue,
-  wireTwistsFromControlValue,
-  wireTwistsToControlValue,
 } from '@melty/shared';
 import {
   ActionButton,
   CodeBlock,
-  CollapsibleSection,
   ColorStrip,
   EmptyState,
   MessageBanner,
+  Panel,
   PageRoot,
-  RangeField,
+  SectionGrid,
   StatusPill,
   TextField,
 } from '~/components/controls/ControlPrimitives.tsx';
+import { WireSimpleControls } from '~/components/controls/WireControls.tsx';
 import {
-  BoundRange,
   BoundSelect,
+  BoundSlider,
   BoundToggle,
 } from '~/components/controls/BoundFields.tsx';
 import { formatToken } from '~/lib/format.ts';
 import {
   applyPreset,
   buildPreset,
+  copyTextToClipboard,
   exportPresetFile,
   fetchPresets,
   importPresetFile,
   removePreset,
   savePreset,
+  serializePreset,
   slugifyPresetId,
 } from '~/lib/presets.ts';
+import { studioTabIdFromPath } from '~/lib/studioTabs.ts';
 import { useConfigStore } from '~/stores/useConfigStore.ts';
 
 // ---------------------------------------------------------------------------
@@ -58,9 +60,9 @@ import { useConfigStore } from '~/stores/useConfigStore.ts';
 // eliminates the 100-field walk on every pixel of drag that was causing
 // the lag.
 //
-// Layout: one flat column. The user explicitly asked for a single column
-// and for the dual-column + card-style grouping to go away, so the whole
-// page is just a sequence of collapsible sections with stacked fields.
+// Layout: MeltShell owns the sidebar tabs. Studio reads the current route and
+// renders the matching control group. Each field owns its own store
+// subscription, so slider ticks stay scoped to the active panel.
 // ---------------------------------------------------------------------------
 
 const THEME_OPTIONS = THEME_NAMES.map((name) => ({
@@ -79,140 +81,500 @@ const ANIMATION_OPTIONS = ANIMATION_STYLES.map((name) => ({
   label: formatToken(name),
   value: name,
 }));
-const LIGHT_LAYOUT_LABELS: Record<LightLayoutName, string> = {
-  TOP: 'Top of screen string',
-  BOTTOM: 'Bottom of screen string',
-  RIGHT: 'Right of screen string',
-  LEFT: 'Left of screen string',
-  TOP_RIGHT: 'Top and right of screen',
-  TOP_LEFT: 'Top and left of screen',
-  TOP_BOTTOM: 'Top and bottom of screen',
-  BOTTOM_RIGHT: 'Bottom and right of screen',
-  BOTTOM_LEFT: 'Bottom and left of screen',
-  LEFT_RIGHT: 'Left and right of screen',
-  LEFT_TOP_RIGHT: 'Left, top, and right of screen',
-  TOP_RIGHT_BOTTOM: 'Top, right, and bottom of screen',
-  RIGHT_BOTTOM_LEFT: 'Right, bottom, and left of screen',
-  BOTTOM_LEFT_TOP: 'Bottom, left, and top of screen',
-  ALL_SIDES: 'All 4 sides',
-  DRAPES: 'Drapes',
-  DUAL_DRAPES: 'Dual drapes',
-  CIRCLE: 'Circle',
-  TRIANGLE: 'Triangle',
-  SQUARE: 'Square',
-  PENTAGON: 'Pentagon',
-  HEXAGON: 'Hexagon',
-  HEPTAGON: 'Heptagon',
-  OCTAGON: 'Octagon',
+const LAYOUT_MODE_LABELS: Record<LayoutModeName, string> = {
+  EDGES: 'Screen Edges',
+  SHAPE: 'Shape',
 };
-const LIGHT_LAYOUT_OPTIONS = LIGHT_LAYOUT_NAMES.map((name) => ({
-  label: LIGHT_LAYOUT_LABELS[name],
+const LAYOUT_MODE_OPTIONS = LAYOUT_MODE_NAMES.map((name) => ({
+  label: LAYOUT_MODE_LABELS[name],
+  value: name,
+}));
+const LAYOUT_EDGE_LABELS: Record<LayoutEdgeName, string> = {
+  TOP: 'Top',
+  RIGHT: 'Right',
+  BOTTOM: 'Bottom',
+  LEFT: 'Left',
+};
+const BULB_ORIENTATION_LABELS: Record<BulbOrientationModeName, string> = {
+  LAYOUT: 'Layout',
+  NATURAL: 'Natural',
+};
+const BULB_ORIENTATION_OPTIONS = BULB_ORIENTATION_MODE_NAMES.map((name) => ({
+  label: BULB_ORIENTATION_LABELS[name],
   value: name,
 }));
 
 export function Studio() {
+  const location = useLocation();
+  const activeTab = studioTabIdFromPath(location.pathname);
+
   return (
     <PageRoot>
-      <ThemeSection />
-      <LightLayoutSection />
-
-      <CollapsibleSection id="bulbs" title="Bulbs" defaultOpen>
-        <BoundRange field="BULB_SCALE" label="Bulb scale" min={0.1} max={1} step={0.01} />
-        <BoundRange field="EMISSIVE_INTENSITY" label="Bulb intensity" min={0} max={20} step={0.1} />
-        <BoundRange field="GLASS_OPACITY" label="Glass opacity" min={0} max={0.9} step={0.01} />
-        <BoundRange field="GLASS_ROUGHNESS" label="Glass roughness" min={0} max={1} step={0.01} />
-      </CollapsibleSection>
-
-      <WiresSection />
-
-      <CollapsibleSection id="motion" title="Motion">
-        <BoundRange field="ANIMATION_SPEED" label="Animation speed" min={0} max={5} step={0.01} />
-        <BoundRange field="SWAY_X" label="Sway X" min={0} max={2} step={0.01} />
-        <BoundRange field="SWAY_Z" label="Sway Z" min={0} max={2} step={0.01} />
-      </CollapsibleSection>
-
-      <CollapsibleSection id="twinkle" title="Twinkle">
-        <BoundSelect field="ANIMATION_STYLE" label="Style" options={ANIMATION_OPTIONS} />
-        <BoundRange field="TWINKLE_SPEED" label="Twinkle speed" min={0} max={4} step={0.01} />
-        <BoundRange field="TWINKLE_MIN_INTENSITY" label="Min intensity" min={0} max={1} step={0.01} />
-        <BoundRange field="TWINKLE_MAX_INTENSITY" label="Max intensity" min={0} max={1} step={0.01} />
-        <BoundRange field="TWINKLE_RANDOMNESS" label="Randomness" min={0} max={1} step={0.01} />
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        id="camera"
-        title="Advanced Camera"
-        hint="Fine tuning only. Light Layouts handle default framing."
-      >
-        <BoundRange field="CAMERA_DISTANCE" label="Distance" min={1} max={200} step={0.1} />
-        <BoundRange field="CAMERA_HEIGHT" label="Target offset (Y)" min={-50} max={50} step={0.1} />
-        <BoundRange field="CAMERA_X" label="Target offset (X)" min={-50} max={50} step={0.1} />
-      </CollapsibleSection>
-
-      <CollapsibleSection
-        id="lighting"
-        title="Scene lighting"
-        hint="Ambient: overall. Key / fill / hemi: wire contrast and read. Reflections: colored spill on the cord."
-      >
-        <BoundRange field="AMBIENT_INTENSITY" label="Ambient" min={0.15} max={5} step={0.01} />
-        <BoundRange field="KEY_LIGHT_INTENSITY" label="Key light" min={0} max={5} step={0.01} />
-        <BoundRange field="FILL_LIGHT_INTENSITY" label="Fill light" min={0} max={5} step={0.01} />
-        <BoundRange field="HEMI_LIGHT_INTENSITY" label="Hemisphere" min={0} max={5} step={0.01} />
-        <BoundToggle field="POINT_LIGHTS_ENABLED" label="Reflections" />
-      </CollapsibleSection>
-
-      <CollapsibleSection id="postfx" title="Post FX / Bloom">
-        <BoundToggle field="POSTFX_ENABLED" label="Post FX" />
-        <BoundRange field="BLOOM_STRENGTH" label="Strength" min={0} max={5} step={0.01} />
-        <BoundRange field="BLOOM_RADIUS" label="Radius" min={0} max={1} step={0.01} />
-        <BoundRange field="BLOOM_THRESHOLD" label="Threshold" min={0} max={1} step={0.01} />
-        <BoundRange field="BLOOM_INTENSITY" label="Bloom intensity" min={0} max={5} step={0.01} />
-      </CollapsibleSection>
-
-      <CollapsibleSection id="environment" title="Environment">
-        <BoundToggle field="BACKGROUND_ENABLED" label="Solid background" />
-        <BoundToggle field="ANTIALIAS_ENABLED" label="Antialiasing" />
-        <BoundToggle field="STATS_ENABLED" label="Stats panel" />
-      </CollapsibleSection>
-
-      <CollapsibleSection id="snow" title="Snow">
-        <BoundToggle field="SNOW_ENABLED" label="Enable snow" />
-        <BoundRange field="SNOW_COUNT" label="Count" min={0} max={2000} step={1} round />
-        <BoundRange field="SNOW_SPEED" label="Speed" min={0} max={0.1} step={0.001} />
-        <BoundRange field="SNOW_SIZE" label="Size" min={0} max={0.5} step={0.001} />
-        <BoundRange field="SNOW_DRIFT" label="Drift" min={-1} max={1} step={0.01} />
-      </CollapsibleSection>
-
-      <CollapsibleSection id="stars" title="Stars">
-        <BoundToggle field="STARS_ENABLED" label="Enable stars" />
-        <BoundRange field="STARS_COUNT" label="Count" min={0} max={2000} step={1} round />
-        <BoundRange field="STARS_SIZE" label="Size" min={0} max={1} step={0.01} />
-        <BoundRange field="STARS_OPACITY" label="Opacity" min={0} max={1} step={0.01} />
-        <BoundRange field="STARS_TWINKLE_SPEED" label="Twinkle speed" min={0} max={5} step={0.01} />
-      </CollapsibleSection>
-
-      <PresetsCollapsible />
+      {activeTab === 'layout' ? <LayoutTab /> : null}
+      {activeTab === 'theme' ? <ThemeTab /> : null}
+      {activeTab === 'lighting' ? <LightingTab /> : null}
+      {activeTab === 'motion' ? <MotionTab /> : null}
+      {activeTab === 'environment' ? <EnvironmentTab /> : null}
+      {activeTab === 'presets' ? <PresetsPanel /> : null}
     </PageRoot>
   );
 }
 
+function LayoutTab() {
+  return (
+    <SectionGrid columns={1}>
+      <LightLayoutSection />
+      <AdvancedCameraPanel />
+    </SectionGrid>
+  );
+}
+
+function ThemeTab() {
+  return (
+    <SectionGrid columns={1}>
+      <ThemeSection />
+    </SectionGrid>
+  );
+}
+
+function LightingTab() {
+  return (
+    <SectionGrid columns={1}>
+      <LightingPanel />
+      <PostFxPanel />
+    </SectionGrid>
+  );
+}
+
+function MotionTab() {
+  return (
+    <SectionGrid columns={1}>
+      <MotionPanel />
+      <TwinklePanel />
+    </SectionGrid>
+  );
+}
+
+function EnvironmentTab() {
+  return (
+    <SectionGrid columns={1}>
+      <EnvironmentPanel />
+      <SnowPanel />
+      <StarsPanel />
+    </SectionGrid>
+  );
+}
+
 function LightLayoutSection() {
-  const layout = useConfigStore((s) => s.config.LIGHT_LAYOUT);
+  const layout = useConfigStore(useShallow((s) => ({
+    mode: s.config.LAYOUT_MODE,
+    edges: s.config.LAYOUT_EDGES,
+    shapeSides: s.config.LAYOUT_SHAPE_SIDES,
+    cornerRoundness: s.config.LAYOUT_CORNER_ROUNDNESS,
+  })));
 
   return (
-    <CollapsibleSection
-      id="light-layout"
+    <Panel
       title="Light Layout"
-      hint={LIGHT_LAYOUT_LABELS[layout]}
-      defaultOpen
-      action={<StatusPill label={formatToken(layout)} tone="accent" />}
+      action={<StatusPill label={layoutStatus(layout)} tone="accent" />}
     >
-      <BoundSelect field="LIGHT_LAYOUT" label="Layout" options={LIGHT_LAYOUT_OPTIONS} />
-      <BoundRange field="LAYOUT_MARGIN" label="Margin" min={0} max={0.35} step={0.01} />
-      <BoundRange field="LAYOUT_SCALE" label="Scale" min={0.2} max={1.5} step={0.01} />
-      <BoundRange field="LAYOUT_OFFSET_X" label="Offset X" min={-1} max={1} step={0.01} />
-      <BoundRange field="LAYOUT_OFFSET_Y" label="Offset Y" min={-1} max={1} step={0.01} />
-    </CollapsibleSection>
+      <LayoutModeSelector />
+      <BoundSlider control="SPANS" />
+      <BoundSlider control="LIGHTS_PER_SEGMENT" />
+      <BoundSlider control="SAG_AMPLITUDE" />
+      <BoundSlider control="BULB_SCALE" />
+      <WireSimpleControls />
+      {layout.mode === 'EDGES' ? <ScreenEdgePicker /> : null}
+      {layout.mode === 'SHAPE' ? <ShapeLayoutControl /> : null}
+      <BoundSelect field="BULB_ORIENTATION_MODE" label="Bulb orientation" options={BULB_ORIENTATION_OPTIONS} />
+      <LayoutSizeControls mode={layout.mode} />
+      <BoundSlider control="LAYOUT_POSITION_X" />
+      <BoundSlider control="LAYOUT_POSITION_Y" />
+    </Panel>
+  );
+}
+
+function layoutStatus(layout: {
+  mode: LayoutModeName;
+  edges: LayoutEdgeName[];
+  shapeSides: number;
+  cornerRoundness: number;
+}): string {
+  if (layout.mode === 'EDGES') {
+    return normalizeLayoutEdges(layout.edges).join('+');
+  }
+  return layout.cornerRoundness >= 0.995 ? 'Circle' : `${layout.shapeSides} Sides`;
+}
+
+function LayoutModeSelector() {
+  const mode = useConfigStore((s) => s.config.LAYOUT_MODE);
+  const patch = useConfigStore((s) => s.patch);
+
+  const handleModeChange = useCallback(
+    (nextMode: LayoutModeName) => {
+      void patch({ LAYOUT_MODE: nextMode });
+    },
+    [patch],
+  );
+
+  return (
+    <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-0 py-1.5">
+      <span className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
+        Mode
+      </span>
+      <div className="grid h-9 grid-cols-2 overflow-hidden rounded-md border border-melt-text-muted/15 bg-melt-frame/35 p-0.5">
+        {LAYOUT_MODE_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => handleModeChange(option.value)}
+            aria-pressed={mode === option.value}
+            className={clsx(
+              'rounded-[4px] px-2 text-[10px] font-black uppercase tracking-[0.12em] transition-colors',
+              mode === option.value
+                ? 'bg-melt-accent text-melt-frame'
+                : 'text-melt-text-muted hover:bg-melt-surface/25 hover:text-melt-text-heading',
+            )}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LayoutSizeControls({ mode }: { mode: LayoutModeName }) {
+  switch (mode) {
+    case 'EDGES':
+      return (
+        <>
+          <BoundSlider control="LAYOUT_CORNER_ROUNDNESS" />
+          <BoundSlider control="EDGE_INSET" />
+          <BoundSlider control="EDGE_COVERAGE" />
+        </>
+      );
+    case 'SHAPE':
+      return (
+        <>
+          <BoundSlider control="SHAPE_PADDING" />
+        </>
+      );
+  }
+}
+
+function ScreenEdgePicker() {
+  const edges = useConfigStore((s) => s.config.LAYOUT_EDGES);
+  const patch = useConfigStore((s) => s.patch);
+  const selectedEdges = normalizeLayoutEdges(edges);
+  const selected = new Set(selectedEdges);
+  const isLocked = selectedEdges.length === 1;
+
+  const handleToggle = useCallback(
+    (edge: LayoutEdgeName) => {
+      const current = normalizeLayoutEdges(useConfigStore.getState().config.LAYOUT_EDGES);
+      const hasEdge = current.includes(edge);
+      if (hasEdge && current.length === 1) return;
+      const next = hasEdge
+        ? current.filter((item) => item !== edge)
+        : normalizeLayoutEdges([...current, edge]);
+      void patch({ LAYOUT_MODE: 'EDGES', LAYOUT_EDGES: next });
+    },
+    [patch],
+  );
+
+  return (
+    <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-0 py-2">
+      <span className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
+        Edges
+      </span>
+      <div className="relative mx-auto aspect-[16/9] w-full max-w-[460px] overflow-hidden rounded-md border border-melt-text-muted/15 bg-[#08090c] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]">
+        <div className="absolute inset-[13%] border border-melt-text-muted/10 bg-melt-frame/35" />
+        <div className="absolute inset-[13%] bg-[radial-gradient(circle_at_center,rgba(255,179,0,0.055),transparent_56%)]" />
+
+        <EdgeRail
+          edge="TOP"
+          selected={selected.has('TOP')}
+          locked={isLocked && selected.has('TOP')}
+          onToggle={handleToggle}
+        />
+        <EdgeRail
+          edge="RIGHT"
+          selected={selected.has('RIGHT')}
+          locked={isLocked && selected.has('RIGHT')}
+          onToggle={handleToggle}
+        />
+        <EdgeRail
+          edge="BOTTOM"
+          selected={selected.has('BOTTOM')}
+          locked={isLocked && selected.has('BOTTOM')}
+          onToggle={handleToggle}
+        />
+        <EdgeRail
+          edge="LEFT"
+          selected={selected.has('LEFT')}
+          locked={isLocked && selected.has('LEFT')}
+          onToggle={handleToggle}
+        />
+
+      </div>
+    </div>
+  );
+}
+
+function EdgeRail({
+  edge,
+  selected,
+  locked,
+  onToggle,
+}: {
+  edge: LayoutEdgeName;
+  selected: boolean;
+  locked: boolean;
+  onToggle: (edge: LayoutEdgeName) => void;
+}) {
+  const horizontal = edge === 'TOP' || edge === 'BOTTOM';
+  const placement: Record<LayoutEdgeName, string> = {
+    TOP: 'left-[13%] right-[13%] top-[5%] h-[18%]',
+    RIGHT: 'right-[4%] top-[13%] bottom-[13%] w-[18%]',
+    BOTTOM: 'left-[13%] right-[13%] bottom-[5%] h-[18%]',
+    LEFT: 'left-[4%] top-[13%] bottom-[13%] w-[18%]',
+  };
+  const railPlacement: Record<LayoutEdgeName, string> = {
+    TOP: 'left-0 right-0 top-1/2 h-[5px] -translate-y-1/2',
+    RIGHT: 'top-0 bottom-0 left-1/2 w-[5px] -translate-x-1/2',
+    BOTTOM: 'left-0 right-0 top-1/2 h-[5px] -translate-y-1/2',
+    LEFT: 'top-0 bottom-0 left-1/2 w-[5px] -translate-x-1/2',
+  };
+
+  return (
+    <button
+      type="button"
+      aria-label={`${LAYOUT_EDGE_LABELS[edge]} edge`}
+      onClick={() => onToggle(edge)}
+      disabled={locked}
+      aria-pressed={selected}
+      className={clsx(
+        'group absolute rounded-[4px] outline-none transition-colors',
+        placement[edge],
+        locked ? 'cursor-default' : 'cursor-pointer',
+      )}
+    >
+      <span
+        aria-hidden
+        className={clsx(
+          'absolute rounded-full transition-all duration-150',
+          railPlacement[edge],
+          selected
+            ? 'bg-melt-accent shadow-[0_0_16px_rgba(255,179,0,0.55)]'
+            : 'bg-melt-text-muted/18 group-hover:bg-melt-accent/55',
+        )}
+      />
+      <span
+        aria-hidden
+        className={clsx(
+          'absolute rounded-full transition-all duration-150',
+          horizontal ? 'left-2 right-2 top-1/2 h-px -translate-y-1/2' : 'top-2 bottom-2 left-1/2 w-px -translate-x-1/2',
+          selected ? 'bg-white/22' : 'bg-white/0 group-hover:bg-white/12',
+        )}
+      />
+    </button>
+  );
+}
+
+function ShapeLayoutControl() {
+  const shape = useConfigStore(useShallow((s) => ({
+    sides: s.config.LAYOUT_SHAPE_SIDES,
+    roundness: s.config.LAYOUT_CORNER_ROUNDNESS,
+  })));
+  const patch = useConfigStore((s) => s.patch);
+  const previewPath = useMemo(
+    () => shapePreviewPath(shape.sides, shape.roundness),
+    [shape.roundness, shape.sides],
+  );
+
+  const handleSidesChange = useCallback(
+    (nextSides: number) => {
+      void patch({
+        LAYOUT_MODE: 'SHAPE',
+        LAYOUT_SHAPE_SIDES: Math.max(3, Math.min(10, Math.round(nextSides))),
+      });
+    },
+    [patch],
+  );
+
+  return (
+    <>
+      <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-0 py-2">
+        <span className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
+          Sides
+        </span>
+        <div className="grid grid-cols-[1fr_72px] items-center gap-3">
+          <div className="relative h-[112px] overflow-hidden rounded-md border border-melt-text-muted/15 bg-[#08090c]">
+            <svg aria-hidden viewBox="0 0 160 112" className="size-full">
+              <path
+                d={previewPath}
+                fill="rgba(255,179,0,0.08)"
+                stroke="rgba(255,179,0,0.95)"
+                strokeWidth="4"
+                strokeLinejoin="round"
+              />
+              <circle cx="80" cy="56" r="2.5" fill="rgba(255,255,255,0.32)" />
+            </svg>
+          </div>
+          <div className="grid grid-rows-[36px_40px_36px] gap-1">
+            <button
+              type="button"
+              disabled={shape.sides >= 10}
+              onClick={() => handleSidesChange(shape.sides + 1)}
+              className="h-9 rounded-md bg-melt-frame/35 text-[15px] font-black text-melt-text-heading transition-colors hover:bg-melt-surface/25 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              +
+            </button>
+            <div className="flex h-10 items-center justify-center rounded-md bg-melt-frame/35 text-[12px] font-black uppercase tracking-[0.16em] text-melt-text-heading">
+              {shape.sides}
+            </div>
+            <button
+              type="button"
+              disabled={shape.sides <= 3}
+              onClick={() => handleSidesChange(shape.sides - 1)}
+              className="h-9 rounded-md bg-melt-frame/35 text-[15px] font-black text-melt-text-heading transition-colors hover:bg-melt-surface/25 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              -
+            </button>
+          </div>
+        </div>
+      </div>
+      <BoundSlider control="LAYOUT_CORNER_ROUNDNESS" />
+    </>
+  );
+}
+
+function shapePreviewPath(sides: number, roundness: number): string {
+  const safeSides = Math.max(3, Math.min(10, Math.round(sides)));
+  const safeRoundness = Math.max(0, Math.min(1, roundness));
+  const cx = 80;
+  const cy = 56;
+  const radius = 38;
+  const points = Array.from({ length: safeSides }, (_, index) => {
+    const angle = -Math.PI / 2 + (index / safeSides) * Math.PI * 2;
+    return {
+      x: cx + Math.cos(angle) * radius,
+      y: cy + Math.sin(angle) * radius,
+    };
+  });
+
+  if (safeRoundness <= 0.02) {
+    return points
+      .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+      .join(' ') + ' Z';
+  }
+
+  const cornerCut = 0.18 + safeRoundness * 0.28;
+  return points
+    .map((point, index) => {
+      const prev = points[(index - 1 + points.length) % points.length]!;
+      const next = points[(index + 1) % points.length]!;
+      const from = {
+        x: point.x + (prev.x - point.x) * cornerCut,
+        y: point.y + (prev.y - point.y) * cornerCut,
+      };
+      const to = {
+        x: point.x + (next.x - point.x) * cornerCut,
+        y: point.y + (next.y - point.y) * cornerCut,
+      };
+      const start = index === 0 ? `M ${from.x.toFixed(2)} ${from.y.toFixed(2)}` : `L ${from.x.toFixed(2)} ${from.y.toFixed(2)}`;
+      return `${start} Q ${point.x.toFixed(2)} ${point.y.toFixed(2)} ${to.x.toFixed(2)} ${to.y.toFixed(2)}`;
+    })
+    .join(' ') + ' Z';
+}
+
+function AdvancedCameraPanel() {
+  return (
+    <Panel title="Advanced Camera" action={<StatusPill label="Fine Tune" tone="neutral" />}>
+      <BoundSlider control="CAMERA_DISTANCE" />
+      <BoundSlider control="CAMERA_HEIGHT" />
+      <BoundSlider control="CAMERA_X" />
+    </Panel>
+  );
+}
+
+function LightingPanel() {
+  return (
+    <Panel title="Lighting">
+      <BoundSlider control="AMBIENT_INTENSITY" />
+      <BoundSlider control="GLASS_OPACITY" />
+      <BoundSlider control="GLASS_ROUGHNESS" />
+      <BoundSlider control="REFLECTION_INTENSITY" />
+    </Panel>
+  );
+}
+
+function PostFxPanel() {
+  return (
+    <Panel title="Post FX / Halo">
+      <BoundSlider control="BULB_INTERNAL_GLOW" />
+      <BoundSlider control="HALO_SOURCE_INTENSITY" />
+      <BoundSlider control="HALO_STRENGTH" />
+      <BoundSlider control="HALO_RADIUS" />
+      <BoundSlider control="HALO_INTENSITY" />
+    </Panel>
+  );
+}
+
+function MotionPanel() {
+  return (
+    <Panel title="Motion">
+      <BoundSlider control="ANIMATION_SPEED" />
+      <BoundSlider control="SWAY_X" />
+      <BoundSlider control="SWAY_Z" />
+    </Panel>
+  );
+}
+
+function TwinklePanel() {
+  return (
+    <Panel title="Twinkle">
+      <BoundSelect field="ANIMATION_STYLE" label="Style" options={ANIMATION_OPTIONS} />
+      <BoundSlider control="TWINKLE_SPEED" />
+      <BoundSlider control="TWINKLE_MIN_INTENSITY" />
+      <BoundSlider control="TWINKLE_MAX_INTENSITY" />
+      <BoundSlider control="TWINKLE_RANDOMNESS" />
+    </Panel>
+  );
+}
+
+function EnvironmentPanel() {
+  return (
+    <Panel title="Environment">
+      <BoundToggle field="BACKGROUND_ENABLED" label="Solid background" />
+      <BoundToggle field="ANTIALIAS_ENABLED" label="Antialiasing" />
+      <BoundToggle field="STATS_ENABLED" label="Stats panel" />
+    </Panel>
+  );
+}
+
+function SnowPanel() {
+  return (
+    <Panel title="Snow">
+      <BoundToggle field="SNOW_ENABLED" label="Enable snow" />
+      <BoundSlider control="SNOW_COUNT" />
+      <BoundSlider control="SNOW_SPEED" />
+      <BoundSlider control="SNOW_SIZE" />
+      <BoundSlider control="SNOW_DRIFT" />
+    </Panel>
+  );
+}
+
+function StarsPanel() {
+  return (
+    <Panel title="Stars">
+      <BoundToggle field="STARS_ENABLED" label="Enable stars" />
+      <BoundSlider control="STARS_COUNT" />
+      <BoundSlider control="STARS_SIZE" />
+      <BoundSlider control="STARS_OPACITY" />
+      <BoundSlider control="STARS_TWINKLE_SPEED" />
+    </Panel>
   );
 }
 
@@ -224,284 +586,16 @@ function ThemeSection() {
   const activeTheme = THEMES[activeThemeKey];
 
   return (
-    <CollapsibleSection
-      id="theme"
+    <Panel
       title="Theme & Colors"
-      hint={`${activeTheme.bulbs.length} bulb colors`}
-      defaultOpen
       action={<StatusPill label={formatToken(activeThemeKey)} tone="accent" />}
     >
       <BoundSelect field="ACTIVE_THEME" label="Bulb theme" options={THEME_OPTIONS} />
       <BoundSelect field="SOCKET_THEME" label="Socket theme" options={SOCKET_OPTIONS} />
       <BoundSelect field="WIRE_THEME" label="Wire theme" options={WIRE_OPTIONS} />
       <ColorStrip colors={activeTheme.bulbs} />
-    </CollapsibleSection>
+    </Panel>
   );
-}
-
-// Wires header shows a live pin-count hint, so it subscribes to just that
-// one number. Field re-renders are scoped to the header badge only.
-interface WireControlUi {
-  weight: number;
-  density: number;
-  thickness: number;
-  separation: number;
-  twists: number;
-}
-
-interface LocalWireWrite {
-  raw: ReturnType<typeof wireAdvancedUiToRaw>;
-  expiresAt: number;
-  settled: boolean;
-}
-
-const LOCAL_WIRE_WRITE_GRACE_MS = 1000;
-
-function WiresSection() {
-  const wireControls = useConfigStore(useShallow((s) => ({
-    NUM_PINS: s.config.NUM_PINS,
-    WIRE_THICKNESS: s.config.WIRE_THICKNESS,
-    WIRE_SEPARATION: s.config.WIRE_SEPARATION,
-    WIRE_TWISTS: s.config.WIRE_TWISTS,
-  })));
-  const patch = useConfigStore((s) => s.patch);
-  const [wireUi, setWireUi] = useState<WireControlUi>(() => wireRawToUi(
-    useConfigStore.getState().config,
-  ));
-  const wireUiRef = useRef(wireUi);
-  const lastLocalWireWrite = useRef<LocalWireWrite | null>(null);
-  wireUiRef.current = wireUi;
-
-  useEffect(
-    () => {
-      const localWrite = lastLocalWireWrite.current;
-      const rawFromUi = wireAdvancedUiToRaw(wireUi);
-
-      if (localWrite && wireRawMatches(localWrite.raw, wireControls)) {
-        localWrite.settled = true;
-        return;
-      }
-      if (
-        localWrite
-        && !localWrite.settled
-        && Date.now() < localWrite.expiresAt
-        && wireRawMatches(localWrite.raw, rawFromUi)
-      ) {
-        return;
-      }
-
-      lastLocalWireWrite.current = null;
-      if (wireRawMatches(rawFromUi, wireControls)) return;
-      const nextUi = wireRawToUi(wireControls);
-      wireUiRef.current = nextUi;
-      setWireUi(nextUi);
-    },
-    [wireControls, wireUi],
-  );
-
-  const patchWireRaw = useCallback(
-    (
-      nextRaw: ReturnType<typeof wireAdvancedUiToRaw>,
-      nextUi: WireControlUi,
-    ) => {
-      lastLocalWireWrite.current = {
-        raw: nextRaw,
-        expiresAt: Date.now() + LOCAL_WIRE_WRITE_GRACE_MS,
-        settled: false,
-      };
-      wireUiRef.current = nextUi;
-      setWireUi(nextUi);
-      void patch(nextRaw);
-    },
-    [patch],
-  );
-
-  const patchSimpleWireUi = useCallback(
-    (nextUi: Partial<Pick<WireControlUi, 'weight' | 'density'>>) => {
-      const stableUi = normalizeWireUi({ ...wireUiRef.current, ...nextUi });
-      const nextRaw = wireSimpleUiToRaw(stableUi);
-      patchWireRaw(nextRaw, {
-        ...wireRawToUi(nextRaw),
-        weight: stableUi.weight,
-        density: stableUi.density,
-      });
-    },
-    [patchWireRaw],
-  );
-
-  const patchAdvancedWireUi = useCallback(
-    (nextUi: Partial<Pick<WireControlUi, 'thickness' | 'separation' | 'twists'>>) => {
-      const stableUi = normalizeWireUi({ ...wireUiRef.current, ...nextUi });
-      const nextRaw = wireAdvancedUiToRaw(stableUi);
-      patchWireRaw(nextRaw, {
-        ...wireRawToUi(nextRaw),
-        thickness: stableUi.thickness,
-        separation: stableUi.separation,
-        twists: stableUi.twists,
-      });
-    },
-    [patchWireRaw],
-  );
-
-  const handleWeightChange = useCallback(
-    (value: number) => {
-      patchSimpleWireUi({ weight: value });
-    },
-    [patchSimpleWireUi],
-  );
-  const handleDensityChange = useCallback(
-    (value: number) => {
-      patchSimpleWireUi({ density: value });
-    },
-    [patchSimpleWireUi],
-  );
-  const handleThicknessChange = useCallback(
-    (value: number) => {
-      patchAdvancedWireUi({ thickness: value });
-    },
-    [patchAdvancedWireUi],
-  );
-  const handleSeparationChange = useCallback(
-    (value: number) => {
-      patchAdvancedWireUi({ separation: value });
-    },
-    [patchAdvancedWireUi],
-  );
-  const handleTwistsChange = useCallback(
-    (value: number) => {
-      patchAdvancedWireUi({ twists: value });
-    },
-    [patchAdvancedWireUi],
-  );
-
-  return (
-    <>
-      <CollapsibleSection id="wires" title="Wires" hint={`${Math.max(wireControls.NUM_PINS - 1, 0)} spans`}>
-        <BoundRange field="NUM_PINS" label="Pin points" min={2} max={20} step={1} round />
-        <BoundRange field="LIGHTS_PER_SEGMENT" label="Lights / span" min={1} max={100} step={1} round />
-        <BoundRange field="SAG_AMPLITUDE" label="Sag" min={0} max={2} step={0.01} />
-        <BoundRange field="TENSION" label="Tension" min={-1} max={1} step={0.01} />
-        <RangeField
-          label="Wire Weight"
-          min={0}
-          max={100}
-          step={1}
-          value={wireUi.weight}
-          onChange={handleWeightChange}
-        />
-        <RangeField
-          label="Twist Density"
-          min={0}
-          max={100}
-          step={1}
-          value={wireUi.density}
-          onChange={handleDensityChange}
-        />
-      </CollapsibleSection>
-
-      <CollapsibleSection id="advanced-wire-tuning" title="Advanced Wire Tuning" hint="fine tune">
-        <RangeField
-          label="Thickness"
-          min={0}
-          max={100}
-          step={1}
-          value={wireUi.thickness}
-          onChange={handleThicknessChange}
-        />
-        <RangeField
-          label="Separation"
-          min={0}
-          max={100}
-          step={1}
-          value={wireUi.separation}
-          onChange={handleSeparationChange}
-        />
-        <RangeField
-          label="Twists"
-          min={0}
-          max={100}
-          step={1}
-          value={wireUi.twists}
-          onChange={handleTwistsChange}
-        />
-      </CollapsibleSection>
-    </>
-  );
-}
-
-function wireRawToUi(wire: {
-  WIRE_THICKNESS: number;
-  WIRE_SEPARATION: number;
-  WIRE_TWISTS: number;
-}): WireControlUi {
-  return {
-    weight: rawThicknessToWireWeight(wire.WIRE_THICKNESS),
-    density: wireTwistsToControlValue(
-      wire.WIRE_TWISTS,
-      wire.WIRE_THICKNESS,
-      wire.WIRE_SEPARATION,
-    ),
-    thickness: rawThicknessToWireWeight(wire.WIRE_THICKNESS),
-    separation: wireSeparationToControlValue(
-      wire.WIRE_SEPARATION,
-      wire.WIRE_THICKNESS,
-      wire.WIRE_TWISTS,
-    ),
-    twists: wireTwistsToControlValue(
-      wire.WIRE_TWISTS,
-      wire.WIRE_THICKNESS,
-      wire.WIRE_SEPARATION,
-    ),
-  };
-}
-
-function wireSimpleUiToRaw(ui: WireControlUi) {
-  return deriveWireFromSimpleControls({
-    weight: ui.weight,
-    density: ui.density,
-  });
-}
-
-function wireAdvancedUiToRaw(ui: WireControlUi) {
-  const thickness = wireThicknessFromControlValue(ui.thickness);
-  const twistIntent = wireTwistIntentFromControlValue(ui.twists);
-  const separation = wireSeparationFromControlValue(ui.separation, thickness, twistIntent);
-  const twists = wireTwistsFromControlValue(ui.twists, thickness, separation);
-  return {
-    WIRE_THICKNESS: thickness,
-    WIRE_SEPARATION: separation,
-    WIRE_TWISTS: twists,
-  };
-}
-
-function wireRawMatches(
-  a: ReturnType<typeof wireAdvancedUiToRaw>,
-  b: {
-    WIRE_THICKNESS: number;
-    WIRE_SEPARATION: number;
-    WIRE_TWISTS: number;
-  },
-): boolean {
-  return (
-    Math.abs(a.WIRE_THICKNESS - b.WIRE_THICKNESS) < 0.0011
-    && Math.abs(a.WIRE_SEPARATION - b.WIRE_SEPARATION) < 0.0011
-    && a.WIRE_TWISTS === b.WIRE_TWISTS
-  );
-}
-
-function normalizeWireUi(ui: WireControlUi): WireControlUi {
-  return {
-    weight: normalizeWireControlPercent(ui.weight),
-    density: normalizeWireControlPercent(ui.density),
-    thickness: normalizeWireControlPercent(ui.thickness),
-    separation: normalizeWireControlPercent(ui.separation),
-    twists: normalizeWireControlPercent(ui.twists),
-  };
-}
-
-function normalizeWireControlPercent(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(100, Math.max(0, Math.round(value)));
 }
 
 // ---------------------------------------------------------------------------
@@ -523,17 +617,20 @@ function PresetSnapshotId({ draftName, draftId }: { draftName: string; draftId: 
   return <CodeBlock label="Snapshot id" value={snapshotId} />;
 }
 
-function PresetsCollapsible() {
+function PresetsPanel() {
   const hydrate = useConfigStore((state) => state.hydrate);
 
   const [presets, setPresets] = useState<Preset[]>([]);
   const [draftName, setDraftName] = useState('Stage Look');
   const [draftId, setDraftId] = useState('stage-look');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [lastExportPreset, setLastExportPreset] = useState<Preset | null>(null);
+  const [lastExportJson, setLastExportJson] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const exportTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedId) ?? null,
@@ -568,6 +665,54 @@ function PresetsCollapsible() {
     setDraftName('Stage Look');
     setDraftId('stage-look');
     setMessage(null);
+  }
+
+  function handleExport(preset: Preset) {
+    const json = serializePreset(preset);
+    setLastExportPreset(preset);
+    setLastExportJson(json);
+    setMessage(`Prepared export "${preset.name}". JSON is shown below.`);
+  }
+
+  function handleExportCurrent() {
+    try {
+      const c = useConfigStore.getState().config;
+      handleExport(
+        buildPreset(
+          draftName.trim() || 'Current Look',
+          slugifyPresetId(draftId || draftName || 'current-look'),
+          c,
+        ),
+      );
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleCopyExportJson() {
+    if (!lastExportJson) return;
+
+    if (await copyTextToClipboard(lastExportJson)) {
+      setMessage('Copied export JSON to clipboard.');
+      return;
+    }
+
+    const textArea = exportTextAreaRef.current;
+    if (textArea) {
+      textArea.focus();
+      textArea.select();
+      textArea.setSelectionRange(0, textArea.value.length);
+      try {
+        if (document.execCommand?.('copy')) {
+          setMessage('Copied export JSON to clipboard.');
+          return;
+        }
+      } catch {
+        // Some embedded browsers expose execCommand but block clipboard writes.
+      }
+    }
+
+    setMessage('Selected export JSON. Press Ctrl+C to copy.');
   }
 
   async function handleSave() {
@@ -639,10 +784,8 @@ function PresetsCollapsible() {
   }
 
   return (
-    <CollapsibleSection
-      id="presets"
+    <Panel
       title="Presets"
-      hint={`${presets.length} saved`}
       action={loading ? <StatusPill label="Loading" tone="warn" /> : null}
     >
       <TextField
@@ -664,16 +807,7 @@ function PresetsCollapsible() {
         </ActionButton>
         <ActionButton
           tone="secondary"
-          onClick={() => {
-            const c = useConfigStore.getState().config;
-            exportPresetFile(
-              buildPreset(
-                draftName.trim() || 'Current Look',
-                slugifyPresetId(draftId || draftName || 'current-look'),
-                c,
-              ),
-            );
-          }}
+          onClick={() => void handleExportCurrent()}
         >
           Export JSON
         </ActionButton>
@@ -693,6 +827,35 @@ function PresetsCollapsible() {
       </div>
       <PresetSnapshotId draftName={draftName} draftId={draftId} />
       {message ? <MessageBanner>{message}</MessageBanner> : null}
+      {lastExportJson ? (
+        <div className="rounded-md border border-melt-text-muted/15 bg-melt-frame/60 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[9px] font-black tracking-[0.22em] uppercase text-melt-text-muted">
+              Latest export JSON
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <ActionButton tone="secondary" onClick={() => void handleCopyExportJson()}>
+                Copy JSON
+              </ActionButton>
+              <ActionButton
+                tone="secondary"
+                onClick={() => {
+                  if (lastExportPreset) exportPresetFile(lastExportPreset);
+                }}
+              >
+                Download JSON
+              </ActionButton>
+            </div>
+          </div>
+          <textarea
+            ref={exportTextAreaRef}
+            aria-label="Latest export JSON"
+            className="mt-2 h-[220px] w-full resize-y overflow-auto rounded border border-melt-text-muted/10 bg-[#07080b] p-3 font-mono text-[10px] leading-5 text-melt-text-heading outline-none focus:border-melt-accent/40"
+            readOnly
+            value={lastExportJson}
+          />
+        </div>
+      ) : null}
       <input
         ref={importInputRef}
         type="file"
@@ -749,7 +912,7 @@ function PresetsCollapsible() {
               >
                 Apply
               </ActionButton>
-              <ActionButton tone="secondary" onClick={() => exportPresetFile(preset)}>
+              <ActionButton tone="secondary" onClick={() => void handleExport(preset)}>
                 Export
               </ActionButton>
               {!preset.builtIn ? (
@@ -765,6 +928,6 @@ function PresetsCollapsible() {
           </article>
         ))}
       </div>
-    </CollapsibleSection>
+    </Panel>
   );
 }

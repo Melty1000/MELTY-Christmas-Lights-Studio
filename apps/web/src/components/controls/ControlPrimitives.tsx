@@ -107,14 +107,14 @@ export function Panel({
   dense?: boolean;
 }) {
   return (
-    <section className="rounded-2xl border border-melt-text-muted/10 bg-melt-frame/40">
-      <header className="flex items-center justify-between gap-3 border-b border-melt-text-muted/10 px-4 py-2.5">
+    <section className="grid gap-2">
+      <header className="flex items-center justify-between gap-3 px-0 py-1">
         <h3 className="text-[10px] font-black tracking-[0.22em] uppercase text-melt-text-heading">
           {title}
         </h3>
         {action ? <div className="flex items-center gap-2">{action}</div> : null}
       </header>
-      <div className={clsx('grid gap-2', dense ? 'p-3' : 'p-4')}>{children}</div>
+      <div className={clsx('grid gap-2', dense ? 'p-0' : 'p-0')}>{children}</div>
     </section>
   );
 }
@@ -263,7 +263,7 @@ function RangeFieldImpl({
   format = defaultNumberFormat,
 }: RangeFieldProps) {
   return (
-    <div className="grid grid-cols-[120px_1fr_64px] items-center gap-3 rounded-md px-2 py-1.5 hover:bg-melt-surface/20">
+    <div className="grid grid-cols-[120px_1fr_64px] items-center gap-3 px-0 py-1.5">
       <label className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
         {label}
       </label>
@@ -302,7 +302,7 @@ type ToggleFieldProps = {
 
 function ToggleFieldImpl({ label, checked, onChange }: ToggleFieldProps) {
   return (
-    <div className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-md px-2 py-1.5 hover:bg-melt-surface/20">
+    <div className="grid grid-cols-[1fr_auto] items-center gap-3 px-0 py-1.5">
       <label className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
         {label}
       </label>
@@ -339,7 +339,7 @@ type SelectFieldProps = {
 
 function SelectFieldImpl({ label, value, options, onChange }: SelectFieldProps) {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-center gap-3 rounded-md px-2 py-1.5 hover:bg-melt-surface/20">
+    <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-0 py-1.5">
       <label className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
         {label}
       </label>
@@ -383,7 +383,7 @@ type TextFieldProps = {
 
 function TextFieldImpl({ label, value, placeholder, onChange }: TextFieldProps) {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-center gap-3 rounded-md px-2 py-1.5 hover:bg-melt-surface/20">
+    <div className="grid grid-cols-[120px_1fr] items-center gap-3 px-0 py-1.5">
       <label className="truncate text-[11px] font-semibold tracking-wide text-melt-text-label">
         {label}
       </label>
