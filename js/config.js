@@ -53,28 +53,78 @@ export function loadConfig() {
     return false;
 }
 
+const NUMERIC_CONFIG_RULES = {
+    NUM_PINS: { min: 2, max: 20, fallback: 7, integer: true },
+    SAG_AMPLITUDE: { min: 0, max: 2, fallback: 0.4 },
+    LIGHTS_PER_SEGMENT: { min: 1, max: 100, fallback: 3, integer: true },
+    BULB_SCALE: { min: 0.1, max: 3, fallback: 0.23 },
+    WIRE_THICKNESS: { min: 0.005, max: 0.05, fallback: 0.031 },
+    WIRE_OFFSET: { min: 0, max: 0.3, fallback: 0.02 },
+    WIRE_SEPARATION: { min: 0.001, max: 0.3, fallback: 0.036 },
+    WIRE_TWISTS: { min: 0, max: 250, fallback: 215, integer: true },
+    AMBIENT_INTENSITY: { min: 0, max: 3, fallback: 1 },
+    BLOOM_STRENGTH: { min: 0, max: 5, fallback: 0.4 },
+    BLOOM_RADIUS: { min: 0.1, max: 1.25, fallback: 0.1 },
+    BLOOM_THRESHOLD: { min: 0, max: 1, fallback: 0.2 },
+    BLOOM_INTENSITY: { min: 0, max: 4, fallback: 0.4 },
+    GLASS_OPACITY: { min: 0.15, max: 1, fallback: 0.15 },
+    GLASS_ROUGHNESS: { min: 0, max: 1, fallback: 0 },
+    EMISSIVE_INTENSITY: { min: 0.3, max: 6, fallback: 6 },
+    GLASS_IOR: { min: 1, max: 3, fallback: 2.5 },
+    ANIMATION_SPEED: { min: 0, max: 2, fallback: 0 },
+    SWAY_X: { min: 0, max: 0.15, fallback: 0 },
+    SWAY_Z: { min: 0, max: 0.15, fallback: 0 },
+    TWINKLE_SPEED: { min: 0, max: 4, fallback: 1 },
+    TWINKLE_MIN_INTENSITY: { min: 0, max: 1, fallback: 0 },
+    TWINKLE_MAX_INTENSITY: { min: 0, max: 1, fallback: 1 },
+    SNOW_COUNT: { min: 0, max: 2000, fallback: 100, integer: true },
+    SNOW_SPEED: { min: 0.0001, max: 0.1, fallback: 0.005 },
+    SNOW_SIZE: { min: 0.01, max: 0.5, fallback: 0.01 },
+    SNOW_DRIFT: { min: 0, max: 0.02, fallback: 0 },
+    STARS_COUNT: { min: 0, max: 2000, fallback: 100, integer: true },
+    STARS_SIZE: { min: 0.1, max: 6, fallback: 0.1 },
+    STARS_OPACITY: { min: 0.1, max: 1, fallback: 0.1 },
+    STARS_TWINKLE_SPEED: { min: 0, max: 2, fallback: 0 },
+    CAMERA_DISTANCE: { min: 1, max: 50, fallback: 22 },
+    CAMERA_HEIGHT: { min: -15, max: 22, fallback: -3 },
+    CAMERA_X: { min: -20, max: 20, fallback: 0 },
+    TENSION: { min: 0, max: 2, fallback: 0 }
+};
+
+function normalizeNumber(value, rule) {
+    const candidate = typeof value === 'string' && value.trim() !== ''
+        ? Number(value)
+        : value;
+    if (typeof candidate !== 'number' || !Number.isFinite(candidate)) {
+        return rule.fallback;
+    }
+    const clamped = Math.max(rule.min, Math.min(rule.max, candidate));
+    return rule.integer ? Math.round(clamped) : clamped;
+}
+
+function normalizeBoolean(value, fallback) {
+    if (value === true || value === false) return value;
+    if (value === 'true' || value === 1) return true;
+    if (value === 'false' || value === 0) return false;
+    return fallback;
+}
+
 // Validate and clamp CONFIG values to valid ranges
 export function validateConfig() {
-    const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
+    for (const [key, rule] of Object.entries(NUMERIC_CONFIG_RULES)) {
+        CONFIG[key] = normalizeNumber(CONFIG[key], rule);
+    }
 
-    // Numeric bounds validation
-    if (typeof CONFIG.NUM_PINS === 'number') CONFIG.NUM_PINS = clamp(CONFIG.NUM_PINS, 2, 20);
-    if (typeof CONFIG.LIGHTS_PER_SEGMENT === 'number') CONFIG.LIGHTS_PER_SEGMENT = clamp(CONFIG.LIGHTS_PER_SEGMENT, 1, 100);
-    if (typeof CONFIG.BULB_SCALE === 'number') CONFIG.BULB_SCALE = clamp(CONFIG.BULB_SCALE, 0.1, 3.0);
-    if (typeof CONFIG.TWINKLE_SPEED === 'number') CONFIG.TWINKLE_SPEED = clamp(CONFIG.TWINKLE_SPEED, 0, 4);
-    if (typeof CONFIG.TWINKLE_MIN_INTENSITY === 'number') CONFIG.TWINKLE_MIN_INTENSITY = clamp(CONFIG.TWINKLE_MIN_INTENSITY, 0, 1);
-    if (typeof CONFIG.TWINKLE_MAX_INTENSITY === 'number') CONFIG.TWINKLE_MAX_INTENSITY = clamp(CONFIG.TWINKLE_MAX_INTENSITY, 0, 1);
-    if (typeof CONFIG.BLOOM_STRENGTH === 'number') CONFIG.BLOOM_STRENGTH = clamp(CONFIG.BLOOM_STRENGTH, 0, 5);
-    if (typeof CONFIG.SNOW_COUNT === 'number') CONFIG.SNOW_COUNT = clamp(CONFIG.SNOW_COUNT, 0, 2000);
-    if (typeof CONFIG.STARS_COUNT === 'number') CONFIG.STARS_COUNT = clamp(CONFIG.STARS_COUNT, 0, 2000);
+    if (CONFIG.TWINKLE_MIN_INTENSITY > CONFIG.TWINKLE_MAX_INTENSITY) {
+        [CONFIG.TWINKLE_MIN_INTENSITY, CONFIG.TWINKLE_MAX_INTENSITY] =
+            [CONFIG.TWINKLE_MAX_INTENSITY, CONFIG.TWINKLE_MIN_INTENSITY];
+    }
 
     // Boolean type enforcement
     const booleanKeys = ['STARS_ENABLED', 'SNOW_ENABLED', 'BACKGROUND_ENABLED',
-        'POINT_LIGHTS_ENABLED', 'ANTIALIAS_ENABLED', 'STATS_ENABLED'];
+        'POINT_LIGHTS_ENABLED', 'POSTFX_ENABLED', 'ANTIALIAS_ENABLED', 'STATS_ENABLED'];
     booleanKeys.forEach(key => {
-        if (key in CONFIG && typeof CONFIG[key] !== 'boolean') {
-            CONFIG[key] = Boolean(CONFIG[key]);
-        }
+        CONFIG[key] = normalizeBoolean(CONFIG[key], key === 'ANTIALIAS_ENABLED' || key === 'POSTFX_ENABLED');
     });
 
     // Migrate old COLOR_CYCLING_ENABLED to ANIMATION_STYLE
@@ -115,6 +165,19 @@ export function validateConfig() {
     };
     if (CONFIG.ACTIVE_THEME && themeMigration[CONFIG.ACTIVE_THEME]) {
         CONFIG.ACTIVE_THEME = themeMigration[CONFIG.ACTIVE_THEME];
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(THEMES, CONFIG.ACTIVE_THEME)) {
+        CONFIG.ACTIVE_THEME = 'GHOST';
+    }
+    if (!Object.prototype.hasOwnProperty.call(WIRE_THEMES, CONFIG.WIRE_THEME)) {
+        CONFIG.WIRE_THEME = 'SILVER';
+    }
+    if (!Object.prototype.hasOwnProperty.call(SOCKET_THEMES, CONFIG.SOCKET_THEME)) {
+        CONFIG.SOCKET_THEME = 'WIRE_MATCH';
+    }
+    if (!['low', 'medium', 'high', 'ultra'].includes(CONFIG.QUALITY)) {
+        CONFIG.QUALITY = 'medium';
     }
 }
 

@@ -6,7 +6,7 @@
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 import * as THREE from 'three';
-import { CONFIG, THEMES, WIRE_THEMES, SOCKET_THEMES } from './config.js';
+import { CONFIG, THEMES, WIRE_THEMES, SOCKET_THEMES, resetConfig } from './config.js';
 import { updateCameraBase, applyFinalPosition } from './config.js';
 import { getBulbPalette, showToast, dismissToast, updateToastProgress } from './utils.js';
 import { Wire, createBulbInstance, createStars, updateStars, createSnowParticles, updateSnow, generateBasePoints, shouldRecreateSnow, shouldRecreateStars } from './geometry.js';
@@ -130,6 +130,7 @@ export function onWindowResize() {
 
 let isInitializing = false;
 let pendingInitTimeout = null;
+let hasRetriedWithDefaults = false;
 
 export function initScene(forceNewBake = false) {
     logInit('initScene() called', { forceNewBake });
@@ -181,7 +182,24 @@ export function initScene(forceNewBake = false) {
             endTimer('dispose-old-scene');
         }
 
-        await _initSceneInternal(loadingToastId, forceNewBake);
+        try {
+            await _initSceneInternal(loadingToastId, forceNewBake);
+            hasRetriedWithDefaults = false;
+        } catch (error) {
+            isInitializing = false;
+            dismissToast(loadingToastId);
+            logError('Renderer', 'Scene initialization failed', error);
+
+            if (!hasRetriedWithDefaults) {
+                hasRetriedWithDefaults = true;
+                resetConfig();
+                showToast('Invalid saved settings were reset. Retrying scene...', 'warning', 5000);
+                initScene(true);
+                return;
+            }
+
+            showToast('Scene initialization failed. Refresh the page to try again.', 'error', 0, { persistent: true });
+        }
     }, 50);
 }
 
