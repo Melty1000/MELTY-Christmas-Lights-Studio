@@ -132,6 +132,17 @@ let isInitializing = false;
 let pendingInitTimeout = null;
 let hasRetriedWithDefaults = false;
 
+function isWebGLUnavailableError(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return /(?:webgl context|creating webgl)/i.test(message);
+}
+
+function clearPartialRendererState() {
+    renderer = null;
+    camera = null;
+    container = null;
+}
+
 export function initScene(forceNewBake = false) {
     logInit('initScene() called', { forceNewBake });
     startTimer('initScene-total');
@@ -189,6 +200,18 @@ export function initScene(forceNewBake = false) {
             isInitializing = false;
             dismissToast(loadingToastId);
             logError('Renderer', 'Scene initialization failed', error);
+
+            if (isWebGLUnavailableError(error)) {
+                hasRetriedWithDefaults = false;
+                clearPartialRendererState();
+                showToast(
+                    'WebGL is unavailable. Enable browser hardware acceleration or use a WebGL-capable browser, then refresh.',
+                    'error',
+                    0,
+                    { persistent: true }
+                );
+                return;
+            }
 
             if (!hasRetriedWithDefaults) {
                 hasRetriedWithDefaults = true;
